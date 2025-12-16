@@ -260,11 +260,20 @@ def _detect_header(first_row: List[str]) -> bool:
     return any(any(key in h for key in tokens) for h in norm_first)
 
 
+def _excel_engine_for_ext(ext: str) -> str:
+    ext = ext.lower()
+    if ext in (".xlsx", ".xlsm"):
+        return "openpyxl"
+    if ext == ".xls":
+        return "xlrd"
+    raise ValueError(f"Unsupported Excel extension: {ext}")
+
+
 def list_excel_sheets(path: str) -> List[str]:
     ext = os.path.splitext(path)[1].lower()
     if ext not in (".xlsx", ".xlsm", ".xls"):
         return []
-    engine = "openpyxl" if ext in (".xlsx", ".xlsm") else "xlrd"
+    engine = _excel_engine_for_ext(ext)
     try:
         with pd.ExcelFile(path, engine=engine) as xls:
             return list(xls.sheet_names)
@@ -277,7 +286,7 @@ def load_excel_rows(file_path: str, ext: str, target_sheets: Optional[List[str]]
     if ext not in (".xlsx", ".xlsm", ".xls"):
         raise ValueError(f"Unsupported Excel extension: {ext}")
 
-    engine = "openpyxl" if ext in (".xlsx", ".xlsm") else "xlrd"
+    engine = _excel_engine_for_ext(ext)
 
     with pd.ExcelFile(file_path, engine=engine) as xls:
         if target_sheets:
