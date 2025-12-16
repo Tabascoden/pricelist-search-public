@@ -4,3 +4,10 @@ __pycache__/
 *.pyc
 *.log
 app.py.bak*
+
+# local env (never commit)
+.env*
+!.env.example
+
+# git junk
+.git.old*
