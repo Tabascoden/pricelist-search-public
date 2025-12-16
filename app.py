@@ -242,8 +242,8 @@ def create_app() -> Flask:
 
         name = secure_filename(f.filename)
         ext = os.path.splitext(name)[1].lower()
-        if ext not in (".xlsx", ".xlsm"):
-            return jsonify({"sheets": []})
+        if ext not in (".xlsx", ".xlsm", ".xls"):
+            return jsonify({"error": "unsupported format", "details": "Неподдерживаемый формат. Загрузите .xlsx или .xls"}), 400
 
         tmp_path = os.path.join(UPLOAD_DIR, f"__tmp_sheets__{os.getpid()}_{name}")
         f.save(tmp_path)
@@ -280,6 +280,11 @@ def create_app() -> Flask:
         original = secure_filename(f.filename)
         if not original:
             original = "price.xlsx"
+
+        ext = os.path.splitext(original)[1].lower()
+        allowed_exts = {".xlsx", ".xlsm", ".xls", ".csv"}
+        if ext not in allowed_exts:
+            return jsonify({"error": "unsupported format", "details": "Неподдерживаемый формат. Загрузите .xlsx или .xls"}), 400
 
         # куда сохраняем
         sup_dir = os.path.join(UPLOAD_DIR, str(supplier_id))

@@ -12,12 +12,7 @@ from typing import Dict, List, Optional, Tuple
 import psycopg2
 from psycopg2.extras import execute_values
 
-# Excel
-try:
-    from openpyxl import load_workbook
-    OPENPYXL_AVAILABLE = True
-except Exception:
-    OPENPYXL_AVAILABLE = False
+import pandas as pd
 
 
 NAME_KEYS = ["наименование", "наименованиетовара", "товар", "описание", "позиция", "product", "item", "название"]
@@ -266,19 +261,50 @@ def _detect_header(first_row: List[str]) -> bool:
 
 
 def list_excel_sheets(path: str) -> List[str]:
-    if not OPENPYXL_AVAILABLE:
+    ext = os.path.splitext(path)[1].lower()
+    if ext not in (".xlsx", ".xlsm", ".xls"):
         return []
-    wb = load_workbook(path, read_only=True, data_only=True)
-    return list(wb.sheetnames)
+    engine = "openpyxl" if ext in (".xlsx", ".xlsm") else "xlrd"
+    try:
+        with pd.ExcelFile(path, engine=engine) as xls:
+            return list(xls.sheet_names)
+    except Exception:
+        return []
 
 
-def _iter_excel_sheet_rows(file_path: str, sheet_name: str):
-    wb = load_workbook(file_path, read_only=True, data_only=True)
-    ws = wb[sheet_name]
-    for r in ws.iter_rows(values_only=True):
-        row = _clean_row(r)
-        if any(v.strip() for v in row):
-            yield row
+def load_excel_rows(file_path: str, ext: str, target_sheets: Optional[List[str]] = None):
+    ext = ext.lower()
+    if ext not in (".xlsx", ".xlsm", ".xls"):
+        raise ValueError(f"Unsupported Excel extension: {ext}")
+
+    engine = "openpyxl" if ext in (".xlsx", ".xlsm") else "xlrd"
+
+    with pd.ExcelFile(file_path, engine=engine) as xls:
+        if target_sheets:
+            sheets = [s for s in target_sheets if s in xls.sheet_names]
+        else:
+            sheets = list(xls.sheet_names)
+
+        if not sheets:
+            return
+
+        data = pd.read_excel(xls, sheet_name=sheets if len(sheets) != 1 else sheets[0], engine=engine, dtype=object)
+        if not isinstance(data, dict):
+            data = {sheets[0]: data}
+
+    for sname, df in data.items():
+        if df is None:
+            yield sname, []
+            continue
+
+        df = df.where(df.notna(), None)
+        rows_raw = df.values.tolist()
+        rows = []
+        for r in rows_raw:
+            row = _clean_row(r)
+            if any(str(v).strip() for v in row):
+                rows.append(row)
+        yield sname, rows
 
 
 def import_price_file(
@@ -434,24 +460,22 @@ def import_price_file(
             stats.append({"sheet": sheet_label, "imported": imported, "skipped": skipped, "reason": "ok", "map": col_map})
 
         # --- Excel ---
-        if ext in (".xlsx", ".xlsm"):
-            if not OPENPYXL_AVAILABLE:
-                raise RuntimeError("openpyxl не установлен (нужен для Excel).")
-
-            wb = load_workbook(file_path, read_only=True, data_only=True)
-            available = list(wb.sheetnames)
+        if ext in (".xlsx", ".xlsm", ".xls"):
+            available = list_excel_sheets(file_path)
 
             if sheet_mode == "selected" and sheet_names:
                 target = [s for s in sheet_names if s in available]
             else:
                 target = available  # auto = все листы
 
-            for sname in target:
-                # поток строк листа
-                it = _iter_excel_sheet_rows(file_path, sname)
-                try:
-                    first = next(it)
-                except StopIteration:
+            for sname, rows in load_excel_rows(file_path, ext, target):
+                if not rows:
+                    stats.append({"sheet": sname, "imported": 0, "skipped": 0, "reason": "empty"})
+                    continue
+
+                it = iter(rows)
+                first = next(it, None)
+                if first is None:
                     stats.append({"sheet": sname, "imported": 0, "skipped": 0, "reason": "empty"})
                     continue
 
