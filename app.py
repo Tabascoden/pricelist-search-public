@@ -8,6 +8,7 @@ import shutil
 from decimal import Decimal
 from io import BytesIO
 from typing import Any, Dict, List, Optional
+from uuid import uuid4
 
 import psycopg2
 import psycopg2.extras
@@ -240,10 +241,14 @@ def create_app() -> Flask:
         if not f or not f.filename:
             return jsonify({"error": "empty filename"}), 400
 
-        name = secure_filename(f.filename)
-        ext = os.path.splitext(name)[1].lower()
+        raw_filename = f.filename or ""
+        ext = os.path.splitext(raw_filename)[1].lower()
         if ext not in (".xlsx", ".xlsm", ".xls"):
             return jsonify({"error": "unsupported format", "details": "Неподдерживаемый формат. Загрузите .xlsx или .xls"}), 400
+
+        name = secure_filename(raw_filename)
+        if not name or not os.path.splitext(name)[1]:
+            name = f"upload_{uuid4().hex}{ext}"
 
         tmp_path = os.path.join(UPLOAD_DIR, f"__tmp_sheets__{os.getpid()}_{name}")
         f.save(tmp_path)
@@ -277,14 +282,15 @@ def create_app() -> Flask:
             except Exception:
                 sheet_names = [s.strip() for s in sheets_raw.split(",") if s.strip()]
 
-        original = secure_filename(f.filename)
-        if not original:
-            original = "price.xlsx"
-
-        ext = os.path.splitext(original)[1].lower()
+        raw_filename = f.filename or ""
+        ext = os.path.splitext(raw_filename)[1].lower()
         allowed_exts = {".xlsx", ".xlsm", ".xls", ".csv"}
         if ext not in allowed_exts:
             return jsonify({"error": "unsupported format", "details": "Неподдерживаемый формат. Загрузите .xlsx или .xls"}), 400
+
+        original = secure_filename(raw_filename)
+        if not original or not os.path.splitext(original)[1]:
+            original = f"upload_{uuid4().hex}{ext}"
 
         # куда сохраняем
         sup_dir = os.path.join(UPLOAD_DIR, str(supplier_id))
