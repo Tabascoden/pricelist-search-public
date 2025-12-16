@@ -7,6 +7,7 @@ import os
 import re
 import sys
 from decimal import Decimal, InvalidOperation
+from io import BytesIO
 from typing import Dict, List, Optional, Tuple
 
 import psycopg2
@@ -273,12 +274,16 @@ def list_excel_sheets(path: str) -> List[str]:
     ext = os.path.splitext(path)[1].lower()
     if ext not in (".xlsx", ".xlsm", ".xls"):
         return []
+
     engine = _excel_engine_for_ext(ext)
+    with open(path, "rb") as f:
+        data = BytesIO(f.read())
+
     try:
-        with pd.ExcelFile(path, engine=engine) as xls:
+        with pd.ExcelFile(data, engine=engine) as xls:
             return list(xls.sheet_names)
-    except Exception:
-        return []
+    except Exception as e:
+        raise RuntimeError(f"Не удалось прочитать листы из файла {path}: {e}") from e
 
 
 def load_excel_rows(file_path: str, ext: str, target_sheets: Optional[List[str]] = None):
@@ -288,7 +293,10 @@ def load_excel_rows(file_path: str, ext: str, target_sheets: Optional[List[str]]
 
     engine = _excel_engine_for_ext(ext)
 
-    with pd.ExcelFile(file_path, engine=engine) as xls:
+    with open(file_path, "rb") as f:
+        data_buf = BytesIO(f.read())
+
+    with pd.ExcelFile(data_buf, engine=engine) as xls:
         if target_sheets:
             sheets = [s for s in target_sheets if s in xls.sheet_names]
         else:
