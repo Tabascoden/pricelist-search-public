@@ -253,6 +253,8 @@ def create_app() -> Flask:
         try:
             sheets = import_price.list_excel_sheets(tmp_path)
             return jsonify({"sheets": sheets})
+        except Exception as e:
+            return jsonify({"error": "failed to read sheets", "details": str(e)}), 400
         finally:
             _safe_remove(tmp_path)
 
