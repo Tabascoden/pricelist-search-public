@@ -243,7 +243,7 @@ def create_app() -> Flask:
             return jsonify({"error": "empty filename"}), 400
 
         raw_filename = os.path.basename(f.filename or "")
-        ext = Path(f.filename or "").suffix.lower()
+        ext = os.path.splitext(raw_filename)[1].lower()
         if ext not in (".xlsx", ".xlsm", ".xls"):
             return jsonify({"error": "unsupported format", "details": "Неподдерживаемый формат. Загрузите .xlsx или .xls"}), 400
 
@@ -284,7 +284,7 @@ def create_app() -> Flask:
                 sheet_names = [s.strip() for s in sheets_raw.split(",") if s.strip()]
 
         raw_filename = os.path.basename(f.filename or "")
-        ext = Path(f.filename or "").suffix.lower()
+        ext = os.path.splitext(raw_filename)[1].lower()
         allowed_exts = {".xlsx", ".xlsm", ".xls", ".csv"}
         if ext not in allowed_exts:
             return jsonify({"error": "unsupported format", "details": "Неподдерживаемый формат. Загрузите .xlsx или .xls"}), 400
