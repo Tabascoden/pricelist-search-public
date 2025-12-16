@@ -1,0 +1,21 @@
+services:
+  search:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    networks:
+      - n8n-compose_default
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=n8n-compose_default"
+
+      - "traefik.http.routers.pricelistsearch-staging.entrypoints=websecure"
+      - "traefik.http.routers.pricelistsearch-staging.rule=Host(`staging.search.iirest.ru`)"
+      - "traefik.http.routers.pricelistsearch-staging.tls=true"
+      - "traefik.http.routers.pricelistsearch-staging.tls.certresolver=le"
+
+      - "traefik.http.services.pricelistsearch-staging.loadbalancer.server.port=5000"
+
+networks:
+  n8n-compose_default:
+    external: true

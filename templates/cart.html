@@ -1,0 +1,202 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="card">
+  <div class="cardHeader">
+    <div>
+      <h2>Корзина</h2>
+      <div class="sub">Заявка собирается локально в браузере. Скачивание — в Excel.</div>
+    </div>
+    <div class="tdActions">
+      <a class="btn" href="/">Назад к поиску</a>
+      <button class="btn primary" id="btnExport">Скачать Excel</button>
+      <button class="btn danger" id="btnClear">Очистить</button>
+    </div>
+  </div>
+</div>
+
+<div id="cartBody"></div>
+
+<div class="card">
+  <div class="cardHeader">
+    <div>
+      <h3>Итого</h3>
+      <div class="sub">Общая сумма по всем поставщикам</div>
+    </div>
+    <div class="right">
+      <h2 id="grandTotal">0</h2>
+    </div>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+  function groupBySupplier(cartObj){
+    const groups = {};
+    for(const key of Object.keys(cartObj || {})){
+      const it = cartObj[key];
+      const sup = (it.supplier_name || "—").trim() || "—";
+      if(!groups[sup]) groups[sup] = [];
+      groups[sup].push(it);
+    }
+    return groups;
+  }
+
+  function recalc(){
+    const cart = loadCart();
+    const groups = groupBySupplier(cart);
+    const body = $("cartBody");
+    body.innerHTML = "";
+
+    const suppliers = Object.keys(groups).sort((a,b)=>a.localeCompare(b,"ru"));
+    if(!suppliers.length){
+      body.innerHTML = `<div class="card"><div class="sub">Корзина пуста</div></div>`;
+      $("grandTotal").textContent = "0";
+      return;
+    }
+
+    let grand = 0;
+
+    for(const sup of suppliers){
+      const items = groups[sup];
+      let subtotal = 0;
+
+      const card = document.createElement("div");
+      card.className = "card";
+
+      const rows = items.map(it=>{
+        const qty = Number(it.qty || 1);
+        const price = Number(it.price || 0);
+        const sum = price * qty;
+        subtotal += sum;
+        return `
+          <tr>
+            <td data-label="Товар"><b>${esc(it.name_raw || "")}</b></td>
+            <td data-label="Ед.">${esc(it.unit || "—")}</td>
+            <td data-label="Кол-во">
+              <div class="tdActions">
+                <button class="btn" data-dec="${it.id}">−</button>
+                <input class="qty" value="${qty}" readonly />
+                <button class="btn" data-inc="${it.id}">+</button>
+              </div>
+            </td>
+            <td data-label="Цена, руб"><b>${esc(fmtPrice(price))}</b></td>
+            <td data-label="Сумма, руб"><b>${esc(fmtPrice(sum))}</b></td>
+            <td data-label="Удалить">
+              <button class="btn danger" data-del="${it.id}">Удалить</button>
+            </td>
+          </tr>
+        `;
+      }).join("");
+
+      grand += subtotal;
+
+      card.innerHTML = `
+        <div class="cardHeader" style="margin-bottom:6px;">
+          <div>
+            <h3>${esc(sup)}</h3>
+            <div class="sub">Итог по поставщику: <b>${esc(fmtPrice(subtotal))}</b></div>
+          </div>
+        </div>
+
+        <div class="tableWrap">
+          <table>
+            <thead>
+              <tr>
+                <th style="width:44%">Товар</th>
+                <th style="width:10%">Ед.</th>
+                <th style="width:18%">Кол-во</th>
+                <th style="width:12%">Цена, руб</th>
+                <th style="width:12%">Сумма, руб</th>
+                <th style="width:10%">—</th>
+              </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+      `;
+      body.appendChild(card);
+    }
+
+    $("grandTotal").textContent = fmtPrice(grand);
+
+    // bind handlers
+    for(const btn of document.querySelectorAll("[data-inc]")){
+      btn.addEventListener("click", ()=>{
+        const id = String(btn.getAttribute("data-inc"));
+        const cart = loadCart();
+        if(cart[id]) cart[id].qty = Number(cart[id].qty||1) + 1;
+        saveCart(cart);
+        recalc();
+      });
+    }
+    for(const btn of document.querySelectorAll("[data-dec]")){
+      btn.addEventListener("click", ()=>{
+        const id = String(btn.getAttribute("data-dec"));
+        const cart = loadCart();
+        if(cart[id]){
+          cart[id].qty = Number(cart[id].qty||1) - 1;
+          if(cart[id].qty <= 0) delete cart[id];
+        }
+        saveCart(cart);
+        recalc();
+      });
+    }
+    for(const btn of document.querySelectorAll("[data-del]")){
+      btn.addEventListener("click", ()=>{
+        const id = String(btn.getAttribute("data-del"));
+        const cart = loadCart();
+        delete cart[id];
+        saveCart(cart);
+        recalc();
+      });
+    }
+  }
+
+  $("btnClear").addEventListener("click", ()=>{
+    if(!confirm("Очистить корзину?")) return;
+    saveCart({});
+    recalc();
+  });
+
+  $("btnExport").addEventListener("click", async ()=>{
+    const cart = loadCart();
+    const items = Object.values(cart || {});
+    if(!items.length){
+      toast("Корзина пуста", "Нечего выгружать");
+      return;
+    }
+    try{
+      const r = await fetch("/export", {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({ items })
+      });
+      if(!r.ok){
+        const t = await r.text();
+        throw new Error(t || "export failed");
+      }
+      const blob = await r.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+
+      // сервер отдаёт правильное имя, но на всякий:
+      a.download = r.headers.get("content-type")?.includes("sheet") ? "zakaz.xlsx" : "zakaz.csv";
+
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+
+      toast("Готово", "Файл скачан");
+    }catch(e){
+      toast("Ошибка", String(e.message || e));
+    }
+  });
+
+  recalc();
+</script>
+{% endblock %}

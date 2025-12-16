@@ -1,0 +1,303 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="card">
+  <div class="cardHeader">
+    <div>
+      <h2>Поставщики</h2>
+      <div class="sub">1 поставщик = 1 прайс. Новый файл заменяет предыдущий.</div>
+    </div>
+    <div class="right">
+      <a class="btn" href="/">Назад к поиску</a>
+    </div>
+  </div>
+
+  <div class="sub">
+    <b>Важно для корректной загрузки:</b><br/>
+    1) Первая строка — шапка. Обязательные колонки: <b>Наименование</b> и <b>Цена</b>.<br/>
+    2) Рекомендуемые: <b>Ед. изм</b>, <b>Артикул</b>.<br/>
+    3) Цена — число (допустимо 84,24 или 84.24). Без объединённых ячеек и без “ИТОГО” внутри таблицы.<br/>
+    4) Если листов несколько: режим <b>Авто</b> импортирует все листы, где найдутся колонки Наименование/Цена. В режиме <b>Выбор</b> — импортируются только отмеченные листы.
+  </div>
+</div>
+
+<div class="card">
+  <div class="cardHeader">
+    <div>
+      <h3>Добавить поставщика</h3>
+      <div class="sub">Создай поставщика, затем загрузи его прайс.</div>
+    </div>
+  </div>
+  <div class="controls">
+    <input class="input" id="newName" placeholder="Например: Мясной дом, Овощи" />
+    <button class="btn primary" id="btnAdd">Создать</button>
+  </div>
+</div>
+
+<div class="card">
+  <div class="cardHeader">
+    <div>
+      <h3>Список поставщиков</h3>
+      <div class="sub">Загрузи файл и выбери режим листов (если Excel).</div>
+    </div>
+  </div>
+
+  <div class="tableWrap">
+    <table>
+      <thead>
+        <tr>
+          <th style="width:6%">ID</th>
+          <th style="width:18%">Поставщик</th>
+          <th style="width:16%">Последняя загрузка</th>
+          <th style="width:16%">Файл</th>
+          <th style="width:10%">Товаров</th>
+          <th style="width:24%">Загрузка прайса</th>
+          <th style="width:10%">Действия</th>
+        </tr>
+      </thead>
+      <tbody id="supRows">
+        <tr><td colspan="7" class="sub">Загрузка…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+  function fmtDate(s){
+    if(!s) return "—";
+    const d = new Date(s);
+    if(String(d) === "Invalid Date") return s;
+    return d.toLocaleString("ru-RU");
+  }
+
+  async function loadSuppliers(){
+    const r = await fetch("/api/suppliers");
+    return await r.json();
+  }
+
+  function sheetUI(id){
+    return `
+      <div class="tdActions" style="width:100%">
+        <select class="select sheetMode" style="flex:1 1 160px">
+          <option value="all">Авто: все листы</option>
+          <option value="selected">Выбор листов</option>
+        </select>
+        <button class="btn showSheets" type="button">Показать листы</button>
+        <button class="btn primary up" type="button">Загрузить</button>
+      </div>
+      <div class="sub sheetBox" style="margin-top:8px; display:none;">
+        <div class="sub" style="margin-bottom:6px;">Отметь листы для импорта:</div>
+        <div class="sheetList" style="display:flex; flex-wrap:wrap; gap:10px;"></div>
+      </div>
+      <input type="hidden" class="sheetSelected" value=""/>
+    `;
+  }
+
+  function renderSuppliers(suppliers){
+    const tbody = $("supRows");
+    tbody.innerHTML = "";
+
+    if(!suppliers || !suppliers.length){
+      tbody.innerHTML = `<tr><td colspan="7" class="sub">Пока нет поставщиков — создай первого.</td></tr>`;
+      return;
+    }
+
+    for(const s of suppliers){
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td data-label="ID"><b>#${esc(s.id)}</b></td>
+        <td data-label="Поставщик">
+          <b>${esc(s.name)}</b>
+          <div class="sub">1 поставщик = 1 прайс</div>
+        </td>
+        <td data-label="Последняя загрузка">${esc(fmtDate(s.last_uploaded_at))}</td>
+        <td data-label="Файл">${esc(s.last_filename || "—")}</td>
+        <td data-label="Товаров"><b>${esc(s.rows_imported || 0)}</b></td>
+        <td data-label="Загрузка прайса">
+          <div class="tdActions" style="width:100%; margin-bottom:8px;">
+            <input type="file" class="input file" style="flex:1 1 260px" accept=".xlsx,.xlsm,.csv"/>
+          </div>
+          ${sheetUI(s.id)}
+        </td>
+        <td data-label="Действия">
+          <button class="btn danger del" type="button">Удалить</button>
+        </td>
+      `;
+
+      const inp = tr.querySelector(".file");
+      const btnUp = tr.querySelector(".up");
+      const btnDel = tr.querySelector(".del");
+      const mode = tr.querySelector(".sheetMode");
+      const btnSheets = tr.querySelector(".showSheets");
+      const sheetBox = tr.querySelector(".sheetBox");
+      const sheetList = tr.querySelector(".sheetList");
+      const sheetSelected = tr.querySelector(".sheetSelected");
+
+      mode.addEventListener("change", ()=>{
+        const v = mode.value;
+        if(v === "selected"){
+          btnSheets.disabled = false;
+        }else{
+          sheetBox.style.display = "none";
+          sheetList.innerHTML = "";
+          sheetSelected.value = "";
+        }
+      });
+
+      btnSheets.addEventListener("click", async ()=>{
+        if(!inp.files || !inp.files.length){
+          toast("Файл не выбран", "Сначала выбери Excel файл");
+          return;
+        }
+        const f = inp.files[0];
+        const ext = (f.name.split(".").pop() || "").toLowerCase();
+        if(ext !== "xlsx" && ext !== "xlsm"){
+          toast("Это не Excel", "Для CSV листов нет");
+          return;
+        }
+        btnSheets.disabled = true;
+        btnSheets.textContent = "Читаю…";
+        try{
+          const fd = new FormData();
+          fd.append("file", f);
+          const r = await fetch("/api/sheets", { method:"POST", body: fd });
+          const j = await r.json();
+          const sheets = j.sheets || [];
+          if(!sheets.length){
+            toast("Листы не найдены", "Проверь файл");
+            return;
+          }
+          sheetBox.style.display = "block";
+          sheetList.innerHTML = "";
+          for(const sh of sheets){
+            const id2 = `sh_${s.id}_${Math.random().toString(16).slice(2)}`;
+            sheetList.insertAdjacentHTML("beforeend", `
+              <label style="display:flex; gap:8px; align-items:center; border:1px solid var(--border); border-radius:12px; padding:8px 10px; background:#fff;">
+                <input type="checkbox" id="${id2}" value="${esc(sh)}"/>
+                <span>${esc(sh)}</span>
+              </label>
+            `);
+          }
+          // по умолчанию всё отмечаем
+          sheetList.querySelectorAll("input[type=checkbox]").forEach(ch=> ch.checked = true);
+
+          const updateSelected = ()=>{
+            const arr = [];
+            sheetList.querySelectorAll("input[type=checkbox]").forEach(ch=>{
+              if(ch.checked) arr.push(ch.value);
+            });
+            sheetSelected.value = JSON.stringify(arr);
+          };
+          sheetList.addEventListener("change", updateSelected);
+          updateSelected();
+        }catch(e){
+          toast("Ошибка", String(e.message || e));
+        }finally{
+          btnSheets.disabled = false;
+          btnSheets.textContent = "Показать листы";
+        }
+      });
+
+      btnUp.addEventListener("click", async ()=>{
+        if(!inp.files || !inp.files.length){
+          toast("Файл не выбран", "Выбери файл прайса");
+          return;
+        }
+
+        const fd = new FormData();
+        fd.append("file", inp.files[0]);
+
+        const sheet_mode = mode.value || "all";
+        fd.append("sheet_mode", sheet_mode);
+
+        if(sheet_mode === "selected"){
+          if(!sheetSelected.value){
+            toast("Не выбраны листы", "Нажми «Показать листы» и отметь нужные");
+            return;
+          }
+          fd.append("sheets", sheetSelected.value); // JSON-массив
+        }
+
+        btnUp.disabled = true;
+        btnUp.textContent = "Загрузка…";
+        try{
+          const r = await fetch(`/api/upload/${s.id}`, { method:"POST", body: fd });
+          const j = await r.json();
+          if(!r.ok){
+            throw new Error(j.details || j.error || "upload failed");
+          }
+          toast("Загружено", `${s.name}: импортировано ${j.imported || 0}`);
+          const fresh = await loadSuppliers();
+          renderSuppliers(fresh.suppliers || []);
+        }catch(e){
+          toast("Ошибка загрузки", String(e.message || e));
+        }finally{
+          btnUp.disabled = false;
+          btnUp.textContent = "Загрузить";
+        }
+      });
+
+      btnDel.addEventListener("click", async ()=>{
+        const ok = confirm(`Удалить поставщика "${s.name}"?\nУдалится и прайс, и позиции в базе.`);
+        if(!ok) return;
+
+        btnDel.disabled = true;
+        btnDel.textContent = "Удаление…";
+        try{
+          const r = await fetch(`/api/suppliers/${s.id}`, { method:"DELETE" });
+          const j = await r.json();
+          if(!r.ok){
+            throw new Error(j.details || j.error || "delete failed");
+          }
+          toast("Удалено", s.name);
+          const fresh = await loadSuppliers();
+          renderSuppliers(fresh.suppliers || []);
+        }catch(e){
+          toast("Ошибка удаления", String(e.message || e));
+        }finally{
+          btnDel.disabled = false;
+          btnDel.textContent = "Удалить";
+        }
+      });
+
+      tbody.appendChild(tr);
+    }
+  }
+
+  $("btnAdd").addEventListener("click", async ()=>{
+    const name = $("newName").value.trim();
+    if(!name){
+      toast("Пусто", "Введи название поставщика");
+      return;
+    }
+    $("btnAdd").disabled = true;
+    $("btnAdd").textContent = "Создание…";
+    try{
+      const r = await fetch("/api/suppliers", {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({ name })
+      });
+      const j = await r.json();
+      if(!r.ok) throw new Error(j.details || j.error || "create failed");
+      $("newName").value = "";
+      toast("Создано", j.supplier?.name || name);
+      const fresh = await loadSuppliers();
+      renderSuppliers(fresh.suppliers || []);
+    }catch(e){
+      toast("Ошибка", String(e.message || e));
+    }finally{
+      $("btnAdd").disabled = false;
+      $("btnAdd").textContent = "Создать";
+    }
+  });
+
+  (async ()=>{
+    const data = await loadSuppliers();
+    renderSuppliers(data.suppliers || []);
+  })();
+</script>
+{% endblock %}

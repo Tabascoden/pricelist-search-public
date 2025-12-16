@@ -1,0 +1,372 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>{{ title }}</title>
+  <style>
+    :root{
+      --bg:#F4F7FF;
+      --card:#FFFFFF;
+      --text:#0F172A;
+      --muted:#64748B;
+      --border:#E6EAF2;
+      --primary:#3B82F6;
+      --primary-weak:#EAF2FF;
+      --danger:#EF4444;
+      --shadow: 0 10px 24px rgba(15,23,42,.08);
+      --shadow2: 0 4px 12px rgba(15,23,42,.06);
+      --r:16px;
+    }
+    *{box-sizing:border-box}
+    body{
+      margin:0;
+      font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
+      background:var(--bg);
+      color:var(--text);
+    }
+    a{color:inherit}
+
+    .header{
+      position:sticky; top:0; z-index:50;
+      background:rgba(255,255,255,.92);
+      backdrop-filter:saturate(1.2) blur(10px);
+      border-bottom:1px solid var(--border);
+    }
+    .headerInner{
+      max-width:1200px; margin:0 auto;
+      padding:10px 12px;
+      display:flex; gap:10px; align-items:center; flex-wrap:wrap;
+    }
+    .brand{
+      display:flex; gap:10px; align-items:center;
+      min-width: 180px;
+    }
+    .logo{
+      width:38px; height:38px; border-radius:12px;
+      background:var(--primary);
+      display:flex; align-items:center; justify-content:center;
+      color:#fff; font-weight:900;
+      box-shadow:0 10px 18px rgba(59,130,246,.25);
+      flex: 0 0 auto;
+    }
+    .brandTitle{line-height:1.1}
+    .brandTitle b{display:block; font-size:14px}
+    .brandTitle small{display:block; color:var(--muted); font-size:12px}
+
+    .nav{
+      margin-left:auto;
+      display:flex; gap:8px; align-items:center;
+      flex-wrap:wrap;
+    }
+    .nav a{
+      text-decoration:none;
+      font-weight:700;
+      font-size:14px;
+      padding:8px 12px;
+      border-radius:12px;
+      background:#fff;
+      border:1px solid var(--border);
+      box-shadow:var(--shadow2);
+      display:inline-flex; gap:8px; align-items:center;
+      white-space:nowrap;
+    }
+    .nav a.active{
+      background:var(--primary-weak);
+      border-color:#CFE2FF;
+      color:#1D4ED8;
+    }
+    .badge{
+      display:inline-flex;
+      padding:2px 8px;
+      border-radius:999px;
+      background:#FEE2E2;
+      color:#991B1B;
+      font-size:12px;
+      font-weight:800;
+      line-height:1.4;
+    }
+
+    .container{
+      max-width:1200px;
+      margin:14px auto;
+      padding:0 12px 24px;
+    }
+
+    .card{
+      background:var(--card);
+      border:1px solid var(--border);
+      border-radius:var(--r);
+      box-shadow:var(--shadow);
+      padding:14px;
+      margin-bottom:12px;
+    }
+    .cardHeader{
+      display:flex; align-items:flex-start; justify-content:space-between;
+      gap:12px; flex-wrap:wrap;
+      margin-bottom:10px;
+    }
+    h1,h2,h3{margin:0}
+    h2{font-size:18px}
+    h3{font-size:16px}
+    .sub{color:var(--muted); font-size:13px}
+    .right{margin-left:auto; text-align:right}
+
+    .controls{
+      display:flex; gap:8px; flex-wrap:wrap; align-items:center;
+      width:100%;
+    }
+    .input,.select{
+      height:40px;
+      border-radius:12px;
+      border:1px solid var(--border);
+      padding:0 12px;
+      background:#fff;
+      font-size:14px;
+      min-width:0;
+      flex: 1 1 220px;
+      max-width: 100%;
+    }
+    .select{padding-right:10px}
+    .btn{
+      height:40px;
+      border-radius:12px;
+      border:1px solid var(--border);
+      background:#fff;
+      padding:0 14px;
+      font-weight:800;
+      cursor:pointer;
+      box-shadow:var(--shadow2);
+      white-space:nowrap;
+      max-width: 100%;
+    }
+    .btn.primary{
+      background:var(--primary);
+      border-color:var(--primary);
+      color:#fff;
+      box-shadow:0 12px 24px rgba(59,130,246,.25);
+    }
+    .btn.danger{
+      background:#FEF2F2;
+      border-color:#FECACA;
+      color:#991B1B;
+    }
+    .btn:disabled{opacity:.6; cursor:not-allowed}
+
+    .tableWrap{width:100%}
+    table{
+      width:100%;
+      border-collapse:separate;
+      border-spacing:0;
+      overflow:hidden;
+    }
+    th,td{
+      text-align:left;
+      padding:10px 10px;
+      border-bottom:1px solid #EEF2F7;
+      vertical-align:top;
+      font-size:14px;
+      word-break:break-word;
+    }
+    th{
+      color:var(--muted);
+      font-size:12px;
+      font-weight:800;
+      background:#FBFCFF;
+    }
+    tr:last-child td{border-bottom:none}
+
+    .tdActions{display:flex; gap:8px; flex-wrap:wrap; align-items:center}
+    .qty{
+      width:76px;
+      height:40px;
+      border-radius:12px;
+      border:1px solid var(--border);
+      padding:0 10px;
+      font-size:14px;
+      text-align:center;
+      background:#fff;
+    }
+
+    /* Toast */
+    .toast{
+      position:fixed;
+      left:12px; right:12px; bottom:14px;
+      max-width:520px;
+      margin:0 auto;
+      background:#0F172A;
+      color:#fff;
+      border-radius:16px;
+      padding:12px 12px;
+      box-shadow:0 18px 36px rgba(15,23,42,.35);
+      display:flex; gap:10px; align-items:flex-start;
+      z-index:100;
+    }
+    .toast.hidden{display:none}
+    .toast b{display:block; font-size:14px}
+    .toast small{display:block; opacity:.85; font-size:12px; margin-top:2px}
+    .toast .x{
+      margin-left:auto;
+      width:34px; height:34px;
+      border-radius:12px;
+      border:1px solid rgba(255,255,255,.18);
+      background:rgba(255,255,255,.08);
+      color:#fff;
+      cursor:pointer;
+    }
+
+    /* Mobile: меньше отступы и всё в колонку */
+    @media (max-width: 520px){
+      .headerInner{padding:8px 10px}
+      .brand{min-width:0}
+      .brandTitle b{font-size:13px}
+      .nav{width:100%; margin-left:0; overflow-x:auto; flex-wrap:nowrap}
+      .nav a{font-size:13px; padding:8px 10px}
+      .container{margin:10px auto; padding:0 10px 22px}
+      .card{padding:12px}
+      .input,.select,.btn{flex: 1 1 100%}
+      th,td{padding:10px 8px}
+    }
+
+    /* Table -> cards on small screens (без горизонтального скролла) */
+    @media (max-width: 860px){
+      thead{display:none}
+      table, tbody, tr, td{display:block; width:100%}
+      tr{
+        background:#fff;
+        border:1px solid var(--border);
+        border-radius:16px;
+        padding:10px 12px;
+        box-shadow:var(--shadow2);
+        margin-bottom:10px;
+      }
+      td{border:none; padding:6px 0}
+      td::before{
+        content: attr(data-label);
+        display:block;
+        font-size:12px;
+        color:var(--muted);
+        font-weight:800;
+        margin-bottom:2px;
+      }
+      .tdActions{gap:10px}
+    }
+  </style>
+</head>
+
+<body>
+  <div class="header">
+    <div class="headerInner">
+      <div class="brand">
+        <div class="logo">A</div>
+        <div class="brandTitle">
+          <b>SMARTPROC</b>
+          <small>Поиск / Заявка</small>
+        </div>
+      </div>
+
+      <nav class="nav">
+        <a href="/" class="{{ 'active' if active=='search' else '' }}">🔎 Поиск</a>
+        <a href="/cart" class="{{ 'active' if active=='cart' else '' }}">🧺 Корзина <span class="badge" id="cartBadge">0</span></a>
+        <a href="/lists" class="{{ 'active' if active=='lists' else '' }}">🏷️ Поставщики</a>
+      </nav>
+    </div>
+  </div>
+
+  <div class="container">
+    {% block content %}{% endblock %}
+  </div>
+
+  <div class="toast hidden" id="toast">
+    <div>
+      <b id="toastTitle">Готово</b>
+      <small id="toastSubtitle"></small>
+    </div>
+    <button class="x" id="toastClose">✕</button>
+  </div>
+
+  <script>
+    function $(id){ return document.getElementById(id); }
+    function esc(s){
+      return String(s ?? "").replace(/[&<>"']/g, (m)=>({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;" }[m]));
+    }
+    function fmtPrice(p){
+      const n = Number(p);
+      if(Number.isNaN(n)) return (p ?? "");
+      return (Math.round(n*100)/100).toLocaleString("ru-RU");
+    }
+
+    // cart in localStorage
+    function normalizeCart(raw){
+      if(!raw) return {};
+      if(Array.isArray(raw)){
+        const obj = {};
+        for(const it of raw){
+          if(!it) continue;
+          const id = Number(it.id);
+          if(!id) continue;
+          obj[String(id)] = {
+            id,
+            name_raw: it.name_raw ?? it.name ?? "",
+            unit: it.unit ?? "",
+            price: it.price ?? 0,
+            supplier_id: it.supplier_id ?? null,
+            supplier_name: it.supplier_name ?? it.supplier ?? "",
+            qty: Number(it.qty ?? 1) || 1
+          };
+        }
+        return obj;
+      }
+      if(typeof raw === "object"){
+        const obj = {};
+        for(const k of Object.keys(raw)){
+          const it = raw[k];
+          if(!it || typeof it !== "object") continue;
+          const id = Number(it.id ?? k);
+          if(!id) continue;
+          obj[String(id)] = {
+            id,
+            name_raw: it.name_raw ?? it.name ?? "",
+            unit: it.unit ?? "",
+            price: it.price ?? 0,
+            supplier_id: it.supplier_id ?? null,
+            supplier_name: it.supplier_name ?? it.supplier ?? "",
+            qty: Number(it.qty ?? 1) || 1
+          };
+        }
+        return obj;
+      }
+      return {};
+    }
+    function loadCart(){
+      try{
+        return normalizeCart(JSON.parse(localStorage.getItem("cart_v1") || "{}"));
+      }catch(e){ return {}; }
+    }
+    function saveCart(c){
+      localStorage.setItem("cart_v1", JSON.stringify(c || {}));
+      updateCartBadge();
+    }
+    function cartCount(c){ return Object.keys(c||{}).length; }
+    function updateCartBadge(){
+      const n = cartCount(loadCart());
+      const b = $("cartBadge");
+      if(b) b.textContent = n;
+    }
+    updateCartBadge();
+
+    // toast
+    let toastTimer=null;
+    function toast(title, subtitle){
+      $("toastTitle").textContent = title || "Готово";
+      $("toastSubtitle").textContent = subtitle || "";
+      $("toast").classList.remove("hidden");
+      if(toastTimer) clearTimeout(toastTimer);
+      toastTimer = setTimeout(()=> $("toast").classList.add("hidden"), 2600);
+    }
+    $("toastClose").addEventListener("click", ()=> $("toast").classList.add("hidden"));
+  </script>
+
+  {% block scripts %}{% endblock %}
+</body>
+</html>
