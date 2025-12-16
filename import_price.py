@@ -337,6 +337,8 @@ def import_price_file(
     ext = os.path.splitext(file_path)[1].lower()
     if original_filename is None:
         original_filename = os.path.basename(file_path)
+    if not ext and original_filename:
+        ext = os.path.splitext(original_filename)[1].lower()
 
     stats: List[Dict[str, object]] = []
     total_imported = 0
