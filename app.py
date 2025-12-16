@@ -241,14 +241,12 @@ def create_app() -> Flask:
         if not f or not f.filename:
             return jsonify({"error": "empty filename"}), 400
 
-        raw_filename = f.filename or ""
+        raw_filename = os.path.basename(f.filename or "")
         ext = os.path.splitext(raw_filename)[1].lower()
         if ext not in (".xlsx", ".xlsm", ".xls"):
             return jsonify({"error": "unsupported format", "details": "Неподдерживаемый формат. Загрузите .xlsx или .xls"}), 400
 
-        name = secure_filename(raw_filename)
-        if not name or not os.path.splitext(name)[1]:
-            name = f"upload_{uuid4().hex}{ext}"
+        name = f"upload_{uuid4().hex}{ext}"
 
         tmp_path = os.path.join(UPLOAD_DIR, f"__tmp_sheets__{os.getpid()}_{name}")
         f.save(tmp_path)
@@ -282,21 +280,20 @@ def create_app() -> Flask:
             except Exception:
                 sheet_names = [s.strip() for s in sheets_raw.split(",") if s.strip()]
 
-        raw_filename = f.filename or ""
+        raw_filename = os.path.basename(f.filename or "")
         ext = os.path.splitext(raw_filename)[1].lower()
         allowed_exts = {".xlsx", ".xlsm", ".xls", ".csv"}
         if ext not in allowed_exts:
             return jsonify({"error": "unsupported format", "details": "Неподдерживаемый формат. Загрузите .xlsx или .xls"}), 400
 
-        original = secure_filename(raw_filename)
-        if not original or not os.path.splitext(original)[1]:
-            original = f"upload_{uuid4().hex}{ext}"
+        original = raw_filename or f"upload_{uuid4().hex}{ext}"
 
         # куда сохраняем
         sup_dir = os.path.join(UPLOAD_DIR, str(supplier_id))
         os.makedirs(sup_dir, exist_ok=True)
 
-        dst_path = os.path.join(sup_dir, original)
+        safe_name = f"upload_{uuid4().hex}{ext}"
+        dst_path = os.path.join(sup_dir, secure_filename(safe_name))
         base, ext = os.path.splitext(dst_path)
         i = 1
         while os.path.exists(dst_path):
