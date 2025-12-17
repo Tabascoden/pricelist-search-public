@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS categories (
 
 ALTER TABLE categories ADD COLUMN IF NOT EXISTS code text;
 CREATE UNIQUE INDEX IF NOT EXISTS categories_code_key ON categories(code);
+CREATE UNIQUE INDEX IF NOT EXISTS categories_name_key ON categories(name);
 
 -- Parent link with safe delete
 DO $$
@@ -99,23 +100,10 @@ CREATE INDEX IF NOT EXISTS idx_supplier_items_name_norm_trgm
 CREATE INDEX IF NOT EXISTS idx_tender_items_project_id ON tender_items(project_id);
 CREATE INDEX IF NOT EXISTS idx_tender_offers_item_id ON tender_offers(tender_item_id);
 
--- Seed minimal categories
-UPDATE categories SET code = 'fresh'
-WHERE (code IS NULL OR code = '') AND name = 'Свежие продукты';
-
-UPDATE categories SET code = 'canned'
-WHERE (code IS NULL OR code = '') AND name = 'Консервы/маринады';
-
-UPDATE categories SET code = 'frozen'
-WHERE (code IS NULL OR code = '') AND name = 'Заморозка';
-
+-- Seed minimal categories (upsert)
 INSERT INTO categories(name, code)
-SELECT v.name, v.code
-FROM (VALUES
+VALUES
     ('Свежие продукты', 'fresh'),
     ('Консервы/маринады', 'canned'),
     ('Заморозка', 'frozen')
-) AS v(name, code)
-WHERE NOT EXISTS (
-    SELECT 1 FROM categories c WHERE c.name = v.name
-);
+ON CONFLICT (name) DO UPDATE SET code = EXCLUDED.code;

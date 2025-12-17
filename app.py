@@ -15,6 +15,7 @@ from uuid import uuid4
 
 import psycopg2
 import psycopg2.extras
+from psycopg2.extras import execute_values
 from flask import Flask, jsonify, render_template, request, send_file
 from werkzeug.utils import secure_filename
 
@@ -41,7 +42,9 @@ def create_app() -> Flask:
 
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
     UPLOAD_DIR = os.getenv("UPLOAD_DIR", os.path.join(BASE_DIR, "uploads"))
+    TENDERS_UPLOAD_DIR = os.path.join(UPLOAD_DIR, "tenders")
     os.makedirs(UPLOAD_DIR, exist_ok=True)
+    os.makedirs(TENDERS_UPLOAD_DIR, exist_ok=True)
 
     def db_connect():
         return psycopg2.connect(
@@ -72,6 +75,62 @@ def create_app() -> Flask:
                 shutil.rmtree(path, ignore_errors=True)
         except Exception:
             pass
+
+    def run_migrations():
+        if os.getenv("AUTO_MIGRATE") != "1":
+            return
+
+        migrations_dir = Path(BASE_DIR) / "db" / "migrations"
+        if not migrations_dir.is_dir():
+            app.logger.info("Migrations dir not found, skipping auto-migrate")
+            return
+
+        lock_key = 726332019
+        try:
+            with db_connect() as conn:
+                conn.autocommit = False
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS schema_migrations(
+                          filename text PRIMARY KEY,
+                          applied_at timestamptz DEFAULT now()
+                        );
+                        """
+                    )
+                    cur.execute("SELECT pg_advisory_lock(%s);", (lock_key,))
+
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute("SELECT filename FROM schema_migrations;")
+                        applied = {row[0] for row in cur.fetchall()}
+
+                    for path in sorted(migrations_dir.glob("*.sql"), key=lambda p: p.name):
+                        fname = path.name
+                        if fname in applied:
+                            app.logger.info("Migration %s already applied, skipping", fname)
+                            continue
+
+                        sql = path.read_text(encoding="utf-8")
+                        try:
+                            with conn.cursor() as cur:
+                                cur.execute(sql)
+                                cur.execute(
+                                    "INSERT INTO schema_migrations(filename) VALUES (%s);",
+                                    (fname,),
+                                )
+                            conn.commit()
+                            app.logger.info("Applied migration %s", fname)
+                        except Exception:
+                            conn.rollback()
+                            app.logger.exception("Failed to apply migration %s", fname)
+                            raise
+                finally:
+                    with conn.cursor() as cur:
+                        cur.execute("SELECT pg_advisory_unlock(%s);", (lock_key,))
+                    conn.commit()
+        except Exception:
+            app.logger.exception("Auto-migrate failed")
 
     def ensure_schema(conn):
         with conn.cursor() as cur:
@@ -202,6 +261,7 @@ def create_app() -> Flask:
 
     # пробуем подготовить схему на старте
     try:
+        run_migrations()
         with db_connect() as conn:
             ensure_schema(conn)
             ensure_schema_compare(conn)
@@ -281,7 +341,10 @@ def create_app() -> Flask:
             suppliers = [{k: _json_safe(v) for k, v in dict(r).items()} for r in rows]
             return jsonify({"suppliers": suppliers})
         except Exception as e:
-            return jsonify({"error": "internal error", "details": str(e)}), 500
+            app.logger.exception("Failed to create tender project")
+            return jsonify(
+                {"error": "failed to create tender project", "details": str(e)}
+            ), 500
 
     @app.route("/api/suppliers", methods=["POST"])
     def api_create_supplier():
@@ -428,7 +491,10 @@ def create_app() -> Flask:
                     proj = _load_project(conn2, pid)
                 return jsonify({"project": proj})
         except Exception as e:
-            return jsonify({"error": "internal error", "details": str(e)}), 500
+            app.logger.exception("Failed to create tender project")
+            return jsonify(
+                {"error": "failed to create tender project", "details": str(e)}
+            ), 500
 
     @app.route("/api/tenders/<int:project_id>", methods=["GET"])
     def api_tenders_get(project_id: int):
