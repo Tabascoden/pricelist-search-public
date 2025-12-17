@@ -37,10 +37,18 @@ async function loadList(){
 form.addEventListener('submit', async (e)=>{
   e.preventDefault();
   const fd = new FormData(form);
-  const resp = await fetch('/api/tenders', {method:'POST', body: fd});
-  const data = await resp.json();
-  if(!resp.ok){ alert(data.error||'Ошибка'); return; }
-  if(data.project){ window.location = `/tenders/${data.project.id}`; }
+  try {
+    const resp = await fetch('/api/tenders', {method:'POST', body: fd});
+    const data = await resp.json();
+    if(!resp.ok){
+      const details = data.details ? `\n${data.details}` : '';
+      alert((data.error||'Ошибка') + details);
+      return;
+    }
+    if(data.project){ window.location = `/tenders/${data.project.id}`; }
+  } catch(err){
+    alert(`Ошибка загрузки файла: ${err}`);
+  }
 });
 
 loadList();
