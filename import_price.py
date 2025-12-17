@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import argparse
+
 import csv
 import os
 import re
@@ -24,6 +25,69 @@ PRICE_KEYS = ["цена", "ценабезндс", "ценасндс", "цена�
 KNOWN_UNITS = {"шт", "штука", "штук", "кг", "г", "гр", "л", "литр", "литров", "уп", "упак", "кор", "коробка"}
 
 
+def normalize_name(name_raw: str) -> str:
+    if name_raw is None:
+        return ""
+    text = str(name_raw).lower()
+    text = text.replace("ё", "е")
+    text = text.strip()
+    text = re.sub(r"[^a-zа-я0-9\s\.\,\-\/]+", " ", text)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+
+def detect_category(name_raw: str) -> Optional[str]:
+    if not name_raw:
+        return None
+    lowered = str(name_raw).lower()
+    if re.search(r"консерв|марин|солен|вялен|в рассоле|в собственном соку", lowered):
+        return "canned"
+    if re.search(r"замороз|frozen", lowered):
+        return "frozen"
+    # базовый дефолт
+    return "fresh"
+
+
+def compute_unit_metrics(name_raw: str, unit_raw: Optional[str], price: Optional[Decimal]):
+    unit_norm = (unit_raw or "").strip().lower().replace(".", "")
+    name_lower = str(name_raw or "").lower()
+    price_per_unit = None
+    base_unit = None
+    base_qty = None
+
+    if unit_norm in {"кг", "kg"}:
+        base_unit = "kg"
+        base_qty = Decimal("1")
+    elif unit_norm in {"л", "л", "литр", "литров", "l"}:
+        base_unit = "l"
+        base_qty = Decimal("1")
+    elif unit_norm in {"шт", "штука", "штук", "уп", "упак", "кор", "коробка"}:
+        patterns = [
+            (r"(\d+[\,\.]?\d*)\s*(кг)", "kg", Decimal("1")),
+            (r"(\d+[\,\.]?\d*)\s*(г|гр|грам)", "kg", Decimal("0.001")),
+            (r"(\d+[\,\.]?\d*)\s*(л|литр|ml|мл)", "l", Decimal("0.001")),
+        ]
+        for pattern, b_unit, multiplier in patterns:
+            m = re.search(pattern, name_lower)
+            if m:
+                try:
+                    val = Decimal(m.group(1).replace(",", "."))
+                    base_unit = b_unit
+                    base_qty = (val * multiplier).quantize(Decimal("0.000001"))
+                    break
+                except Exception:
+                    continue
+
+    if base_qty and price:
+        try:
+            if base_qty > 0:
+                price_per_unit = (price / base_qty).quantize(Decimal("0.0001"))
+        except Exception:
+            price_per_unit = None
+
+    return base_unit, base_qty, price_per_unit
+
+
 def connect_db():
     return psycopg2.connect(
         host=os.getenv("DB_HOST", "127.0.0.1"),
@@ -34,6 +98,51 @@ def connect_db():
         connect_timeout=8,
         options="-c statement_timeout=600000",
     )
+
+
+def fetch_category_map(conn) -> Dict[str, int]:
+    with conn.cursor() as cur:
+        cur.execute("SELECT id, code FROM categories;")
+        rows = cur.fetchall()
+    return {code: cid for cid, code in rows}
+
+
+def ensure_schema_compare(conn):
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS categories (
+              id serial PRIMARY KEY,
+              name text,
+              code text UNIQUE,
+              parent_id int REFERENCES categories(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS tender_projects (
+              id serial PRIMARY KEY,
+              title text,
+              created_at timestamptz DEFAULT now()
+            );
+            """
+        )
+        cur.execute("ALTER TABLE supplier_items ADD COLUMN IF NOT EXISTS name_normalized text;")
+        cur.execute("ALTER TABLE supplier_items ADD COLUMN IF NOT EXISTS base_unit text;")
+        cur.execute("ALTER TABLE supplier_items ADD COLUMN IF NOT EXISTS base_qty numeric(12,6);")
+        cur.execute("ALTER TABLE supplier_items ADD COLUMN IF NOT EXISTS price_per_unit numeric(12,4);")
+        cur.execute("ALTER TABLE supplier_items ADD COLUMN IF NOT EXISTS category_id int REFERENCES categories(id);")
+        cur.execute("ALTER TABLE supplier_items ADD COLUMN IF NOT EXISTS category_path text;")
+        cur.execute(
+            """
+            INSERT INTO categories(name, code)
+            SELECT * FROM (VALUES
+                ('Свежие продукты', 'fresh'),
+                ('Консервы/маринады', 'canned'),
+                ('Заморозка', 'frozen')
+            ) AS s(name, code)
+            WHERE NOT EXISTS (SELECT 1 FROM categories WHERE code = s.code);
+            """
+        )
+    conn.commit()
 
 
 def normalize_header(text: str) -> str:
@@ -388,6 +497,8 @@ def import_price_file(
             if not cur.fetchone():
                 raise RuntimeError(f"Поставщик id={supplier_id} не найден")
 
+            ensure_schema_compare(conn)
+
             # 1 поставщик = 1 прайс -> удаляем старое
             cur.execute("DELETE FROM supplier_items WHERE supplier_id=%s;", (supplier_id,))
             cur.execute("DELETE FROM price_list_files WHERE supplier_id=%s;", (supplier_id,))
@@ -404,6 +515,8 @@ def import_price_file(
             file_id = cur.fetchone()[0]
             conn.commit()
 
+        category_map = fetch_category_map(conn)
+
         def insert_batch(batch: List[Tuple]):
             nonlocal total_imported
             if not batch:
@@ -413,7 +526,8 @@ def import_price_file(
                     cur2,
                     """
                     INSERT INTO supplier_items
-                      (supplier_id, price_list_file_id, external_code, name_raw, unit, price, currency, is_active)
+                      (supplier_id, price_list_file_id, external_code, name_raw, unit, price, currency, is_active,
+                       name_normalized, base_unit, base_qty, price_per_unit, category_id)
                     VALUES %s
                     """,
                     batch,
@@ -472,6 +586,11 @@ def import_price_file(
                 code_raw = get(col_map["code"])
                 unit_raw = get(col_map["unit"])
 
+                name_norm = normalize_name(name_raw)
+                base_unit, base_qty, price_per_unit = compute_unit_metrics(name_raw, unit_raw, price_val)
+                category_code = detect_category(name_raw)
+                category_id = category_map.get(category_code) if category_code else None
+
                 return (
                     supplier_id,
                     file_id,
@@ -481,6 +600,11 @@ def import_price_file(
                     price_val,
                     "RUB",
                     True,
+                    name_norm,
+                    base_unit,
+                    base_qty,
+                    price_per_unit,
+                    category_id,
                 )
 
             # сначала отрабатываем буфер

@@ -1,0 +1,123 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="card">
+  <div class="cardHeader">
+    <div>
+      <h1>Тендер #{{ project_id }}</h1>
+      <div class="sub">Подбор предложений и сравнение по цене за базовую единицу</div>
+    </div>
+    <div class="right">
+      <button class="btn" id="btnExport">Экспорт XLSX</button>
+      <button class="btn danger" id="btnDelete">Удалить</button>
+    </div>
+  </div>
+  <div id="projectBody">Загрузка...</div>
+</div>
+
+<div class="card" id="searchPanel" style="display:none">
+  <div class="cardHeader"><h3 id="searchTitle"></h3><button class="btn" onclick="closeSearch()">Закрыть</button></div>
+  <div class="controls">
+    <input class="input" id="searchInput" placeholder="Поиск по базе">
+    <select class="select" id="searchSort">
+      <option value="ppu_asc">Цена за баз. ед.</option>
+      <option value="price_asc">Цена</option>
+      <option value="rank">Релевантность</option>
+    </select>
+    <button class="btn primary" onclick="runSearch()">Искать</button>
+  </div>
+  <div id="searchResults" class="tableWrap" style="margin-top:10px"></div>
+</div>
+
+<script>
+let currentProject = null;
+let currentItemId = null;
+
+async function loadProject(){
+  const resp = await fetch(`/api/tenders/{{ project_id }}`);
+  const data = await resp.json();
+  if(!resp.ok){ document.getElementById('projectBody').innerHTML = data.error || 'Ошибка'; return; }
+  currentProject = data.project;
+  renderProject();
+}
+
+function renderProject(){
+  const wrap = document.getElementById('projectBody');
+  const p = currentProject;
+  if(!p || !p.items){ wrap.innerHTML = 'Нет данных'; return; }
+  let html = '<div class="tableWrap"><table><tr><th>#</th><th>Номенклатура</th><th>Кол-во</th><th>Ед.</th><th>Выбор</th><th>Альтернативы</th><th></th></tr>';
+  for(const it of p.items){
+    const selected = (it.offers||[]).find(o=>o.id === it.selected_offer_id) || (it.offers||[]).find(o=>o.offer_type==='selected');
+    const alts = (it.offers||[]).filter(o=>o.offer_type==='alternative');
+    html += `<tr>
+      <td>${it.row_no||''}</td>
+      <td>${it.name_input||''}</td>
+      <td>${it.qty||''}</td>
+      <td>${it.unit_input||''}</td>
+      <td>${selected ? `${selected.supplier_name||''}<br><small>${selected.name_raw||''}</small><br><b>${fmtPrice(selected.price_per_unit||selected.price)} ₽</b>` : '<span class="sub">Не выбрано</span>'}</td>
+      <td>${alts.map(a=>`${a.supplier_name||''}: ${fmtPrice(a.price_per_unit||a.price)}`).join('<br>')}</td>
+      <td><button class="btn" onclick="openSearch(${it.id}, '${(it.name_input||'').replace(/'/g,"\'")}')">Подобрать</button></td>
+    </tr>`;
+  }
+  html += '</table></div>';
+  wrap.innerHTML = html;
+}
+
+function openSearch(itemId, title){
+  currentItemId = itemId;
+  document.getElementById('searchPanel').style.display='block';
+  document.getElementById('searchTitle').innerText = 'Подбор: ' + title;
+  document.getElementById('searchInput').value = title;
+  runSearch();
+}
+function closeSearch(){ document.getElementById('searchPanel').style.display='none'; }
+
+async function runSearch(){
+  const q = document.getElementById('searchInput').value;
+  const sort = document.getElementById('searchSort').value;
+  const item = (currentProject.items||[]).find(i=>i.id===currentItemId) || {};
+  const params = new URLSearchParams({q, sort, limit: '40'});
+  if(item.category_id){ params.set('category_id', item.category_id); }
+  const resp = await fetch('/search?'+params.toString());
+  const data = await resp.json();
+  const list = data.items || [];
+  let html = '<table><tr><th>Поставщик</th><th>Товар</th><th>Цена</th><th>Баз. ед.</th><th></th></tr>';
+  for(const r of list){
+    html += `<tr><td>${r.supplier_name||''}</td><td>${r.name_raw||''}</td><td>${fmtPrice(r.price)}</td><td>${r.base_unit||''} ${r.base_qty||''}<br>PPU: ${fmtPrice(r.price_per_unit)}</td><td><button class="btn primary" onclick="selectItem(${r.id})">Выбрать</button></td></tr>`;
+  }
+  html += '</table>';
+  document.getElementById('searchResults').innerHTML = html;
+}
+
+async function selectItem(supplierItemId){
+  if(!currentItemId) return;
+  const resp = await fetch(`/api/tenders/items/${currentItemId}/select`, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({supplier_item_id: supplierItemId})
+  });
+  const data = await resp.json();
+  if(!resp.ok){ alert(data.error||'Ошибка'); return; }
+  currentProject = data.project;
+  closeSearch();
+  renderProject();
+}
+
+document.getElementById('btnDelete').onclick = async ()=>{
+  if(!confirm('Удалить проект?')) return;
+  await fetch('/api/tenders/{{ project_id }}', {method:'DELETE'});
+  window.location = '/tenders';
+};
+
+document.getElementById('btnExport').onclick = async ()=>{
+  const resp = await fetch('/api/tenders/{{ project_id }}/export', {method:'POST'});
+  const blob = await resp.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `tender_{{ project_id }}.xlsx`;
+  a.click();
+  URL.revokeObjectURL(url);
+};
+
+loadProject();
+</script>
+{% endblock %}
