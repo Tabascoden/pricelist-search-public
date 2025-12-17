@@ -61,6 +61,17 @@ def create_app() -> Flask:
             return float(v)
         return v
 
+    def _scalar(row, key=None):
+        if row is None:
+            return None
+        if isinstance(row, dict):
+            if key and key in row:
+                return row[key]
+            if len(row) == 1:
+                return next(iter(row.values()))
+            raise KeyError(f"Expected key '{key}' in row {row.keys()}")
+        return row[0]
+
     def _safe_remove(path: Optional[str]):
         try:
             if path and os.path.isfile(path) and os.path.exists(path):
@@ -452,7 +463,7 @@ def create_app() -> Flask:
 
                 with conn.cursor() as cur:
                     cur.execute("INSERT INTO tender_projects(title) VALUES (%s) RETURNING id;", (title,))
-                    pid = cur.fetchone()[0]
+                    pid = _scalar(cur.fetchone(), "id")
 
                     items_to_insert = []
                     for i, row in enumerate(df.itertuples(index=False), start=1):
@@ -586,7 +597,7 @@ def create_app() -> Flask:
                         """,
                         {"item_id": item_id, **snap},
                     )
-                    selected_id = cur.fetchone()[0]
+                    selected_id = _scalar(cur.fetchone(), "id")
 
                     params = {
                         "category_id": item.get("category_id") or base.get("category_id"),
@@ -817,7 +828,7 @@ def create_app() -> Flask:
                         """,
                         (supplier_id,),
                     )
-                    cnt = cur.fetchone()[0]
+                    cnt = _scalar(cur.fetchone())
                     if cnt and cnt > 0:
                         return jsonify(
                             {
