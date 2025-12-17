@@ -118,7 +118,7 @@
         <td data-label="Товаров"><b>${esc(s.rows_imported || 0)}</b></td>
         <td data-label="Загрузка прайса">
           <div class="tdActions" style="width:100%; margin-bottom:8px;">
-            <input type="file" class="input file" style="flex:1 1 260px" accept=".xlsx,.xlsm,.csv"/>
+            <input type="file" class="input file" style="flex:1 1 260px" accept=".xlsx,.xlsm,.xls,.csv"/>
           </div>
           ${sheetUI(s.id)}
         </td>
@@ -154,7 +154,7 @@
         }
         const f = inp.files[0];
         const ext = (f.name.split(".").pop() || "").toLowerCase();
-        if(ext !== "xlsx" && ext !== "xlsm"){
+        if(ext !== "xlsx" && ext !== "xlsm" && ext !== "xls"){
           toast("Это не Excel", "Для CSV листов нет");
           return;
         }

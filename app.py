@@ -5,9 +5,11 @@ import json
 import os
 import re
 import shutil
+from pathlib import Path
 from decimal import Decimal
 from io import BytesIO
 from typing import Any, Dict, List, Optional
+from uuid import uuid4
 
 import psycopg2
 import psycopg2.extras
@@ -240,16 +242,20 @@ def create_app() -> Flask:
         if not f or not f.filename:
             return jsonify({"error": "empty filename"}), 400
 
-        name = secure_filename(f.filename)
-        ext = os.path.splitext(name)[1].lower()
-        if ext not in (".xlsx", ".xlsm"):
-            return jsonify({"sheets": []})
+        raw_filename = os.path.basename(f.filename or "")
+        ext = os.path.splitext(raw_filename)[1].lower()
+        if ext not in (".xlsx", ".xlsm", ".xls"):
+            return jsonify({"error": "unsupported format", "details": "Неподдерживаемый формат. Загрузите .xlsx или .xls"}), 400
+
+        name = f"upload_{uuid4().hex}{ext}"
 
         tmp_path = os.path.join(UPLOAD_DIR, f"__tmp_sheets__{os.getpid()}_{name}")
         f.save(tmp_path)
         try:
             sheets = import_price.list_excel_sheets(tmp_path)
             return jsonify({"sheets": sheets})
+        except Exception as e:
+            return jsonify({"error": "failed to read sheets", "details": str(e)}), 400
         finally:
             _safe_remove(tmp_path)
 
@@ -277,15 +283,20 @@ def create_app() -> Flask:
             except Exception:
                 sheet_names = [s.strip() for s in sheets_raw.split(",") if s.strip()]
 
-        original = secure_filename(f.filename)
-        if not original:
-            original = "price.xlsx"
+        raw_filename = os.path.basename(f.filename or "")
+        ext = os.path.splitext(raw_filename)[1].lower()
+        allowed_exts = {".xlsx", ".xlsm", ".xls", ".csv"}
+        if ext not in allowed_exts:
+            return jsonify({"error": "unsupported format", "details": "Неподдерживаемый формат. Загрузите .xlsx или .xls"}), 400
+
+        original = raw_filename or f"upload_{uuid4().hex}{ext}"
 
         # куда сохраняем
         sup_dir = os.path.join(UPLOAD_DIR, str(supplier_id))
         os.makedirs(sup_dir, exist_ok=True)
 
-        dst_path = os.path.join(sup_dir, original)
+        storage_name = f"upload_{uuid4().hex}{ext}"
+        dst_path = os.path.join(sup_dir, secure_filename(storage_name))
         base, ext = os.path.splitext(dst_path)
         i = 1
         while os.path.exists(dst_path):
@@ -351,9 +362,10 @@ def create_app() -> Flask:
                 }
             )
         except Exception as e:
+            app.logger.exception("Failed to import upload for supplier %s", supplier_id)
             # если импорт упал — файл оставляем (чтобы можно было скачать/проверить), но можно удалить:
             # _safe_remove(dst_path)
-            return jsonify({"error": "upload/import failed", "details": str(e)}), 500
+            return jsonify({"error": "upload/import failed", "details": "Ошибка загрузки: не удалось прочитать файл"}), 500
 
     # ---------------- Search ----------------
     @app.route("/search", methods=["GET"])

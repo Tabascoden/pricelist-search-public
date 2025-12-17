@@ -7,17 +7,13 @@ import os
 import re
 import sys
 from decimal import Decimal, InvalidOperation
+from io import BytesIO
 from typing import Dict, List, Optional, Tuple
 
 import psycopg2
 from psycopg2.extras import execute_values
 
-# Excel
-try:
-    from openpyxl import load_workbook
-    OPENPYXL_AVAILABLE = True
-except Exception:
-    OPENPYXL_AVAILABLE = False
+import pandas as pd
 
 
 NAME_KEYS = ["наименование", "наименованиетовара", "товар", "описание", "позиция", "product", "item", "название"]
@@ -265,20 +261,104 @@ def _detect_header(first_row: List[str]) -> bool:
     return any(any(key in h for key in tokens) for h in norm_first)
 
 
+def _find_header_row(rows: List[List[str]], scan_limit: int = 80):
+    """
+    Ищем строку-шапку в первых scan_limit строках.
+    Шапка должна содержать хотя бы 'наименование' и 'цена'.
+    Возвращаем: (headers, data_rows, header_index)
+    """
+
+    def has_any(norm_row, keys):
+        for cell in norm_row:
+            if not cell:
+                continue
+            for k in keys:
+                if k in cell:
+                    return True
+        return False
+
+    best_idx = None
+    for i, row in enumerate(rows[:scan_limit]):
+        norm = [normalize_header(c) for c in row]
+        has_name = has_any(norm, NAME_KEYS)
+        has_price = has_any(norm, PRICE_KEYS)
+        if has_name and has_price:
+            best_idx = i
+            break
+
+    if best_idx is None:
+        return None, rows, None
+
+    return rows[best_idx], rows[best_idx + 1 :], best_idx
+
+
+def _excel_engine_for_ext(ext: str) -> str:
+    ext = ext.lower()
+    if ext in (".xlsx", ".xlsm"):
+        return "openpyxl"
+    if ext == ".xls":
+        return "xlrd"
+    raise ValueError(f"Unsupported Excel extension: {ext}")
+
+
 def list_excel_sheets(path: str) -> List[str]:
-    if not OPENPYXL_AVAILABLE:
+    ext = os.path.splitext(path)[1].lower()
+    if ext not in (".xlsx", ".xlsm", ".xls"):
         return []
-    wb = load_workbook(path, read_only=True, data_only=True)
-    return list(wb.sheetnames)
+
+    engine = _excel_engine_for_ext(ext)
+    with open(path, "rb") as f:
+        data = BytesIO(f.read())
+
+    try:
+        with pd.ExcelFile(data, engine=engine) as xls:
+            return list(xls.sheet_names)
+    except Exception as e:
+        raise RuntimeError(f"Не удалось прочитать листы из файла {path}: {e}") from e
 
 
-def _iter_excel_sheet_rows(file_path: str, sheet_name: str):
-    wb = load_workbook(file_path, read_only=True, data_only=True)
-    ws = wb[sheet_name]
-    for r in ws.iter_rows(values_only=True):
-        row = _clean_row(r)
-        if any(v.strip() for v in row):
-            yield row
+def load_excel_rows(file_path: str, ext: str, target_sheets: Optional[List[str]] = None):
+    ext = ext.lower()
+    if ext not in (".xlsx", ".xlsm", ".xls"):
+        raise ValueError(f"Unsupported Excel extension: {ext}")
+
+    engine = _excel_engine_for_ext(ext)
+
+    with open(file_path, "rb") as f:
+        data_buf = BytesIO(f.read())
+
+    with pd.ExcelFile(data_buf, engine=engine) as xls:
+        if target_sheets:
+            sheets = [s for s in target_sheets if s in xls.sheet_names]
+        else:
+            sheets = list(xls.sheet_names)
+
+        if not sheets:
+            return
+
+        data = pd.read_excel(
+            xls,
+            sheet_name=sheets if len(sheets) != 1 else sheets[0],
+            engine=engine,
+            dtype=object,
+            header=None,   # важно: не выбрасываем первую строку как "header"
+        )
+        if not isinstance(data, dict):
+            data = {sheets[0]: data}
+
+    for sname, df in data.items():
+        if df is None:
+            yield sname, []
+            continue
+
+        df = df.where(df.notna(), None)
+        rows_raw = df.values.tolist()
+        rows = []
+        for r in rows_raw:
+            row = _clean_row(r)
+            if any(str(v).strip() for v in row):
+                rows.append(row)
+        yield sname, rows
 
 
 def import_price_file(
@@ -294,6 +374,8 @@ def import_price_file(
     ext = os.path.splitext(file_path)[1].lower()
     if original_filename is None:
         original_filename = os.path.basename(file_path)
+    if not ext and original_filename:
+        ext = os.path.splitext(original_filename)[1].lower()
 
     stats: List[Dict[str, object]] = []
     total_imported = 0
@@ -434,41 +516,21 @@ def import_price_file(
             stats.append({"sheet": sheet_label, "imported": imported, "skipped": skipped, "reason": "ok", "map": col_map})
 
         # --- Excel ---
-        if ext in (".xlsx", ".xlsm"):
-            if not OPENPYXL_AVAILABLE:
-                raise RuntimeError("openpyxl не установлен (нужен для Excel).")
-
-            wb = load_workbook(file_path, read_only=True, data_only=True)
-            available = list(wb.sheetnames)
+        if ext in (".xlsx", ".xlsm", ".xls"):
+            available = list_excel_sheets(file_path)
 
             if sheet_mode == "selected" and sheet_names:
                 target = [s for s in sheet_names if s in available]
             else:
                 target = available  # auto = все листы
 
-            for sname in target:
-                # поток строк листа
-                it = _iter_excel_sheet_rows(file_path, sname)
-                try:
-                    first = next(it)
-                except StopIteration:
+            for sname, rows in load_excel_rows(file_path, ext, target):
+                if not rows:
                     stats.append({"sheet": sname, "imported": 0, "skipped": 0, "reason": "empty"})
                     continue
 
-                if _detect_header(first):
-                    headers = first
-                    rows_iter = it
-                else:
-                    headers = None
-
-                    def rows_iter2():
-                        yield first
-                        for x in it:
-                            yield x
-
-                    rows_iter = rows_iter2()
-
-                process_rows(sname, headers, iter(rows_iter))
+                headers, data_rows, header_idx = _find_header_row(rows)
+                process_rows(sname, headers, iter(data_rows))
 
         # --- CSV ---
         else:

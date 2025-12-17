@@ -2,10 +2,13 @@
 
 Flask-based service for uploading supplier price lists, searching the catalog, and exporting selections.
 
+Supported upload formats: Excel `.xlsx` and legacy Excel 97–2003 `.xls` files, plus CSV.
+
 ## Requirements
 - Python 3.10+
 - PostgreSQL 12+
 - A configured `.env` file (see `.env.example`).
+- `xlrd` is used to read legacy `.xls` uploads.
 
 ## Local development
 1. Create and activate a virtual environment.
