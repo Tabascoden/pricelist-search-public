@@ -15,7 +15,6 @@ from uuid import uuid4
 
 import psycopg2
 import psycopg2.extras
-from psycopg2.extras import execute_values
 from flask import Flask, jsonify, render_template, request, send_file
 from werkzeug.utils import secure_filename
 
@@ -477,7 +476,7 @@ def create_app() -> Flask:
                         items_to_insert.append((pid, i, name_val, qty_val, unit_val, category_id))
 
                     if items_to_insert:
-                        execute_values(
+                        psycopg2.extras.execute_values(
                             cur,
                             """
                             INSERT INTO tender_items(project_id, row_no, name_input, qty, unit_input, category_id)
