@@ -29,8 +29,32 @@
 </div>
 
 <script>
+const projectId = {{ project_id }};
 let currentProject = null;
 let currentItemId = null;
+
+function formatOfferSummary(off){
+  if(!off) return '';
+  const parts = [];
+  const total = off.total_price;
+  const priceText = total != null ? `${fmtPrice(total)} ₽` : '';
+  if(off.price_per_unit){
+    const unit = (off.base_unit || off.unit || '').trim();
+    const unitText = unit ? ` ₽/${unit}` : ' ₽';
+    parts.push(`PPU ${fmtPrice(off.price_per_unit)}${unitText}`.trim());
+  }
+  if(off.packs_needed){
+    parts.push(`уп. ${off.packs_needed}`);
+  }
+  let label = off.supplier_name || '';
+  if(priceText){
+    label = label ? `${label}: ${priceText}` : priceText;
+  }
+  if(parts.length){
+    label += ` (${parts.join(', ')})`;
+  }
+  return label;
+}
 
 async function loadProject(){
   const resp = await fetch(`/api/tenders/{{ project_id }}`);
@@ -48,13 +72,21 @@ function renderProject(){
   for(const it of p.items){
     const selected = (it.offers||[]).find(o=>o.id === it.selected_offer_id) || (it.offers||[]).find(o=>o.offer_type==='selected');
     const alts = (it.offers||[]).filter(o=>o.offer_type==='alternative');
+    const selectedTotal = selected && selected.total_price != null ? `${fmtPrice(selected.total_price)} ₽` : (selected ? `${fmtPrice(selected.price_per_unit||selected.price)} ₽` : '');
+    const meta = [];
+    if(selected && selected.price_per_unit){
+      const unit = (selected.base_unit||selected.unit||'').trim();
+      const unitText = unit ? ` ₽/${unit}` : ' ₽';
+      meta.push(`PPU ${fmtPrice(selected.price_per_unit)}${unitText}`);
+    }
+    if(selected && selected.packs_needed){ meta.push(`уп. ${selected.packs_needed}`); }
     html += `<tr>
       <td>${it.row_no||''}</td>
       <td>${it.name_input||''}</td>
       <td>${it.qty||''}</td>
       <td>${it.unit_input||''}</td>
-      <td>${selected ? `${selected.supplier_name||''}<br><small>${selected.name_raw||''}</small><br><b>${fmtPrice(selected.price_per_unit||selected.price)} ₽</b>` : '<span class="sub">Не выбрано</span>'}</td>
-      <td>${alts.map(a=>`${a.supplier_name||''}: ${fmtPrice(a.price_per_unit||a.price)}`).join('<br>')}</td>
+      <td>${selected ? `${selected.supplier_name||''}<br><small>${selected.name_raw||''}</small><br><b>${selectedTotal}</b>${meta.length ? `<br><small>${meta.join(', ')}</small>` : ''}` : '<span class="sub">Не выбрано</span>'}</td>
+      <td>${alts.map(a=>formatOfferSummary(a)).join('<br>')}</td>
       <td><button class="btn" onclick="openSearch(${it.id}, '${(it.name_input||'').replace(/'/g,"\'")}')">Подобрать</button></td>
     </tr>`;
   }
@@ -90,15 +122,20 @@ async function runSearch(){
 
 async function selectItem(supplierItemId){
   if(!currentItemId) return;
+  const item = (currentProject.items||[]).find(i=>i.id===currentItemId) || {};
   const resp = await fetch(`/api/tenders/items/${currentItemId}/select`, {
     method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({supplier_item_id: supplierItemId})
+    body: JSON.stringify({
+      supplier_item_id: supplierItemId,
+      tender_item_id: currentItemId,
+      project_id: currentProject?.id || projectId,
+      row_no: item.row_no
+    })
   });
   const data = await resp.json();
   if(!resp.ok){ alert(data.error||'Ошибка'); return; }
-  currentProject = data.project;
+  await loadProject();
   closeSearch();
-  renderProject();
 }
 
 document.getElementById('btnDelete').onclick = async ()=>{

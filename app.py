@@ -3,6 +3,7 @@
 
 import csv
 import json
+import math
 import os
 import re
 import shutil
@@ -374,6 +375,40 @@ def create_app() -> Flask:
             return jsonify({"error": "internal error", "details": str(e)}), 500
 
     # ---------------- API: tenders ----------------
+    def _calc_offer_totals(offer: Dict[str, Any], tender_qty: Optional[Any]):
+        total_price = None
+        packs_needed = None
+
+        try:
+            qty = float(tender_qty)
+        except Exception:
+            qty = None
+
+        try:
+            base_qty = float(offer.get("base_qty")) if offer.get("base_qty") is not None else None
+        except Exception:
+            base_qty = None
+
+        try:
+            ppu = float(offer.get("price_per_unit")) if offer.get("price_per_unit") is not None else None
+        except Exception:
+            ppu = None
+
+        try:
+            price_val = float(offer.get("price")) if offer.get("price") is not None else None
+        except Exception:
+            price_val = None
+
+        if qty is not None and base_qty and base_qty > 0:
+            packs_needed = math.ceil(qty / base_qty)
+
+        if qty is not None and ppu is not None:
+            total_price = ppu * qty
+        elif packs_needed is not None and price_val is not None:
+            total_price = packs_needed * price_val
+
+        return total_price, packs_needed
+
     def _load_project(conn, project_id: int):
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
@@ -411,7 +446,17 @@ def create_app() -> Flask:
         for off in offers:
             offers_by_item.setdefault(off["tender_item_id"], []).append(off)
         for it in items:
-            it["offers"] = offers_by_item.get(it["id"], [])
+            enriched_offers: List[Dict[str, Any]] = []
+            for off in offers_by_item.get(it["id"], []):
+                total_price, packs_needed = _calc_offer_totals(off, it.get("qty"))
+                enriched = dict(off)
+                if total_price is not None:
+                    enriched["total_price"] = total_price
+                if packs_needed is not None:
+                    enriched["packs_needed"] = packs_needed
+                enriched["tender_qty"] = it.get("qty")
+                enriched_offers.append(enriched)
+            it["offers"] = enriched_offers
         project_dict = dict(project)
         project_dict["items"] = items
         return project_dict
@@ -556,19 +601,60 @@ def create_app() -> Flask:
     def api_tenders_select(item_id: int):
         data = request.get_json(silent=True) or {}
         supplier_item_id = data.get("supplier_item_id")
-        if not supplier_item_id:
+        tender_item_id = data.get("tender_item_id")
+        project_id = data.get("project_id")
+        row_no = data.get("row_no")
+
+        if tender_item_id is None:
+            return jsonify({"error": "tender_item_id is required"}), 400
+        if supplier_item_id is None:
             return jsonify({"error": "supplier_item_id is required"}), 400
+        if project_id is None:
+            return jsonify({"error": "project_id is required"}), 400
+
+        try:
+            supplier_item_id = int(supplier_item_id)
+            tender_item_id = int(tender_item_id)
+            project_id = int(project_id)
+        except Exception:
+            return jsonify({"error": "invalid ids"}), 400
+
+        if item_id != tender_item_id:
+            return jsonify({"error": "path tender item mismatch"}), 400
+
+        try:
+            row_no = int(row_no) if row_no is not None else None
+        except Exception:
+            row_no = None
         try:
             with db_connect() as conn:
                 ensure_schema_compare(conn)
                 with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                     cur.execute(
-                        "SELECT id, project_id, category_id, name_input FROM tender_items WHERE id=%s;",
-                        (item_id,),
+                        """
+                        SELECT id, project_id, row_no, qty, unit_input, category_id, name_input
+                        FROM tender_items
+                        WHERE id=%s AND project_id=%s;
+                        """,
+                        (tender_item_id, project_id),
                     )
                     item = cur.fetchone()
+                    if not item and row_no is not None:
+                        cur.execute(
+                            """
+                            SELECT id, project_id, row_no, qty, unit_input, category_id, name_input
+                            FROM tender_items
+                            WHERE project_id=%s AND row_no=%s
+                            ORDER BY id ASC
+                            LIMIT 1;
+                            """,
+                            (project_id, row_no),
+                        )
+                        item = cur.fetchone()
+                        if item:
+                            tender_item_id = item["id"]
                     if not item:
-                        return jsonify({"error": "item not found"}), 404
+                        return jsonify({"error": "tender item not found"}), 404
 
                     cur.execute(
                         """
@@ -584,19 +670,37 @@ def create_app() -> Flask:
                     if not base:
                         return jsonify({"error": "supplier item not found"}), 404
 
-                    cur.execute("DELETE FROM tender_offers WHERE tender_item_id=%s;", (item_id,))
-
                     snap = _snapshot_offer(base, base["supplier_name"], item.get("category_id"))
+
                     cur.execute(
-                        """
-                        INSERT INTO tender_offers
-                          (tender_item_id, offer_type, supplier_id, supplier_item_id, supplier_name, name_raw, unit, price, base_unit, base_qty, price_per_unit, category_id)
-                        VALUES (%(item_id)s, 'selected', %(supplier_id)s, %(supplier_item_id)s, %(supplier_name)s, %(name_raw)s, %(unit)s,
-                                %(price)s, %(base_unit)s, %(base_qty)s, %(price_per_unit)s, %(category_id)s)
-                        RETURNING id;
-                        """,
-                        {"item_id": item_id, **snap},
+                        "SELECT id FROM tender_offers WHERE tender_item_id=%s AND supplier_item_id=%s LIMIT 1;",
+                        (tender_item_id, supplier_item_id),
                     )
+                    existing_selected = cur.fetchone()
+
+                    if existing_selected:
+                        cur.execute(
+                            """
+                            UPDATE tender_offers
+                            SET offer_type='selected', supplier_id=%(supplier_id)s, supplier_name=%(supplier_name)s,
+                                name_raw=%(name_raw)s, unit=%(unit)s, price=%(price)s, base_unit=%(base_unit)s,
+                                base_qty=%(base_qty)s, price_per_unit=%(price_per_unit)s, category_id=%(category_id)s
+                            WHERE id=%(id)s
+                            RETURNING id;
+                            """,
+                            {"id": existing_selected["id"], **snap},
+                        )
+                    else:
+                        cur.execute(
+                            """
+                            INSERT INTO tender_offers
+                              (tender_item_id, offer_type, supplier_id, supplier_item_id, supplier_name, name_raw, unit, price, base_unit, base_qty, price_per_unit, category_id)
+                            VALUES (%(item_id)s, 'selected', %(supplier_id)s, %(supplier_item_id)s, %(supplier_name)s, %(name_raw)s, %(unit)s,
+                                    %(price)s, %(base_unit)s, %(base_qty)s, %(price_per_unit)s, %(category_id)s)
+                            RETURNING id;
+                            """,
+                            {"item_id": tender_item_id, **snap},
+                        )
                     selected_id = _scalar(cur.fetchone(), "id")
 
                     params = {
@@ -618,26 +722,53 @@ def create_app() -> Flask:
                     """
                     cur.execute(sql_alt, params)
                     alts = cur.fetchall()
+                    alt_ids: List[int] = []
                     for alt in alts:
                         snap_alt = _snapshot_offer(alt, alt["supplier_name"], item.get("category_id"))
                         cur.execute(
-                            """
-                            INSERT INTO tender_offers
-                              (tender_item_id, offer_type, supplier_id, supplier_item_id, supplier_name, name_raw, unit, price, base_unit, base_qty, price_per_unit, category_id)
-                            VALUES (%(item_id)s, 'alternative', %(supplier_id)s, %(supplier_item_id)s, %(supplier_name)s, %(name_raw)s, %(unit)s,
-                                    %(price)s, %(base_unit)s, %(base_qty)s, %(price_per_unit)s, %(category_id)s);
-                            """,
-                            {"item_id": item_id, **snap_alt},
+                            "SELECT id FROM tender_offers WHERE tender_item_id=%s AND supplier_item_id=%s LIMIT 1;",
+                            (tender_item_id, alt["id"]),
                         )
+                        existing_alt = cur.fetchone()
+                        if existing_alt:
+                            cur.execute(
+                                """
+                                UPDATE tender_offers
+                                SET offer_type='alternative', supplier_id=%(supplier_id)s, supplier_name=%(supplier_name)s,
+                                    name_raw=%(name_raw)s, unit=%(unit)s, price=%(price)s, base_unit=%(base_unit)s,
+                                    base_qty=%(base_qty)s, price_per_unit=%(price_per_unit)s, category_id=%(category_id)s
+                                WHERE id=%(id)s
+                                RETURNING id;
+                                """,
+                                {"id": existing_alt["id"], **snap_alt},
+                            )
+                        else:
+                            cur.execute(
+                                """
+                                INSERT INTO tender_offers
+                                  (tender_item_id, offer_type, supplier_id, supplier_item_id, supplier_name, name_raw, unit, price, base_unit, base_qty, price_per_unit, category_id)
+                                VALUES (%(item_id)s, 'alternative', %(supplier_id)s, %(supplier_item_id)s, %(supplier_name)s, %(name_raw)s, %(unit)s,
+                                        %(price)s, %(base_unit)s, %(base_qty)s, %(price_per_unit)s, %(category_id)s)
+                                RETURNING id;
+                                """,
+                                {"item_id": tender_item_id, **snap_alt},
+                            )
+                        alt_ids.append(_scalar(cur.fetchone(), "id"))
+
+                    cur.execute(
+                        """
+                        DELETE FROM tender_offers
+                        WHERE tender_item_id=%s AND offer_type='alternative' AND id <> ALL(%s);
+                        """,
+                        (tender_item_id, alt_ids or [0]),
+                    )
 
                     cur.execute(
                         "UPDATE tender_items SET selected_offer_id=%s WHERE id=%s;",
-                        (selected_id, item_id),
+                        (selected_id, tender_item_id),
                     )
                 conn.commit()
-            with db_connect() as conn2:
-                proj = _load_project(conn2, item["project_id"])
-            return jsonify({"project": proj})
+            return jsonify({"ok": True, "selected_offer_id": selected_id})
         except Exception as e:
             return jsonify({"error": "internal error", "details": str(e)}), 500
 
