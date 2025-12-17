@@ -106,4 +106,4 @@ VALUES
     ('Свежие продукты', 'fresh'),
     ('Консервы/маринады', 'canned'),
     ('Заморозка', 'frozen')
-ON CONFLICT (name) DO UPDATE SET code = EXCLUDED.code;
+ON CONFLICT DO NOTHING;
