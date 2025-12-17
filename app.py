@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+import csv
 import json
 import os
 import re
 import shutil
-from pathlib import Path
+from datetime import datetime
 from decimal import Decimal
 from io import BytesIO
-from typing import Any, Dict, List, Optional
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
 import psycopg2
@@ -17,6 +19,7 @@ from flask import Flask, jsonify, render_template, request, send_file
 from werkzeug.utils import secure_filename
 
 import import_price
+import pandas as pd
 
 try:
     from openpyxl import Workbook
@@ -87,10 +90,121 @@ def create_app() -> Flask:
             cur.execute("ALTER TABLE supplier_uploads ADD COLUMN IF NOT EXISTS last_sheets text;")
         conn.commit()
 
+    def ensure_schema_compare(conn):
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS categories (
+                  id serial PRIMARY KEY,
+                  name text,
+                  code text UNIQUE,
+                  parent_id int REFERENCES categories(id)
+                );
+
+                CREATE TABLE IF NOT EXISTS category_rules (
+                  id serial PRIMARY KEY,
+                  category_id int REFERENCES categories(id),
+                  pattern text
+                );
+
+                CREATE TABLE IF NOT EXISTS tender_projects (
+                  id serial PRIMARY KEY,
+                  title text,
+                  created_at timestamptz DEFAULT now()
+                );
+
+                CREATE TABLE IF NOT EXISTS tender_items (
+                  id serial PRIMARY KEY,
+                  project_id int REFERENCES tender_projects(id) ON DELETE CASCADE,
+                  row_no int,
+                  name_input text,
+                  qty numeric(12,3),
+                  unit_input text,
+                  category_id int REFERENCES categories(id),
+                  selected_offer_id int
+                );
+
+                CREATE TABLE IF NOT EXISTS tender_offers (
+                  id serial PRIMARY KEY,
+                  tender_item_id int REFERENCES tender_items(id) ON DELETE CASCADE,
+                  offer_type text,
+                  supplier_id int REFERENCES suppliers(id),
+                  supplier_item_id int REFERENCES supplier_items(id),
+                  supplier_name text,
+                  name_raw text,
+                  unit text,
+                  price numeric(12,4),
+                  base_unit text,
+                  base_qty numeric(12,6),
+                  price_per_unit numeric(12,4),
+                  category_id int REFERENCES categories(id),
+                  created_at timestamptz DEFAULT now()
+                );
+                """
+            )
+
+            cur.execute("ALTER TABLE supplier_items ADD COLUMN IF NOT EXISTS name_normalized text;")
+            cur.execute("ALTER TABLE supplier_items ADD COLUMN IF NOT EXISTS base_unit text;")
+            cur.execute("ALTER TABLE supplier_items ADD COLUMN IF NOT EXISTS base_qty numeric(12,6);")
+            cur.execute("ALTER TABLE supplier_items ADD COLUMN IF NOT EXISTS price_per_unit numeric(12,4);")
+            cur.execute(
+                "ALTER TABLE supplier_items ADD COLUMN IF NOT EXISTS category_id int REFERENCES categories(id);"
+            )
+            cur.execute("ALTER TABLE supplier_items ADD COLUMN IF NOT EXISTS category_path text;")
+
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_supplier_items_name_norm_trgm
+                  ON supplier_items USING gin (coalesce(name_normalized, name_raw) gin_trgm_ops);
+                """
+            )
+
+            cur.execute(
+                """
+                INSERT INTO categories(name, code)
+                SELECT * FROM (VALUES
+                    ('Свежие продукты', 'fresh'),
+                    ('Консервы/маринады', 'canned'),
+                    ('Заморозка', 'frozen')
+                ) AS s(name, code)
+                WHERE NOT EXISTS (SELECT 1 FROM categories WHERE code = s.code);
+                """
+            )
+        conn.commit()
+
+    def get_category_map(conn) -> Dict[str, int]:
+        ensure_schema_compare(conn)
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, code FROM categories;")
+            rows = cur.fetchall()
+        return {code: cid for cid, code in rows}
+
+    def normalize_category_value(val: Optional[str]) -> Optional[str]:
+        if val is None:
+            return None
+        v = str(val).strip().lower()
+        if not v:
+            return None
+        mapper = {
+            "fresh": "fresh",
+            "свеж": "fresh",
+            "консерв": "canned",
+            "марин": "canned",
+            "солен": "canned",
+            "вялен": "canned",
+            "замороз": "frozen",
+            "frozen": "frozen",
+        }
+        for k, code in mapper.items():
+            if k in v:
+                return code
+        return v if v in ("fresh", "canned", "frozen") else None
+
     # пробуем подготовить схему на старте
     try:
         with db_connect() as conn:
             ensure_schema(conn)
+            ensure_schema_compare(conn)
     except Exception:
         pass
 
@@ -107,6 +221,16 @@ def create_app() -> Flask:
     @app.route("/lists", methods=["GET"])
     def page_lists():
         return render_template("lists.html", title=f"{APP_TITLE} — Поставщики", active="lists")
+
+    @app.route("/tenders", methods=["GET"])
+    def page_tenders():
+        return render_template("tenders.html", title=f"{APP_TITLE} — Тендеры", active="tenders")
+
+    @app.route("/tenders/<int:project_id>", methods=["GET"])
+    def page_tender_detail(project_id: int):
+        return render_template(
+            "tender_project.html", title=f"{APP_TITLE} — Тендер #{project_id}", active="tenders", project_id=project_id
+        )
 
     @app.route("/favicon.ico", methods=["GET"])
     def favicon():
@@ -173,6 +297,434 @@ def create_app() -> Flask:
                     row = cur.fetchone()
                 conn.commit()
             return jsonify({"supplier": dict(row)})
+        except Exception as e:
+            return jsonify({"error": "internal error", "details": str(e)}), 500
+
+    # ---------------- API: tenders ----------------
+    def _load_project(conn, project_id: int):
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT id, title, created_at FROM tender_projects WHERE id=%s;",
+                (project_id,),
+            )
+            project = cur.fetchone()
+            if not project:
+                return None
+
+            cur.execute(
+                """
+                SELECT ti.id, ti.project_id, ti.row_no, ti.name_input, ti.qty, ti.unit_input, ti.category_id, ti.selected_offer_id
+                FROM tender_items ti
+                WHERE ti.project_id=%s
+                ORDER BY ti.row_no ASC, ti.id ASC;
+                """,
+                (project_id,),
+            )
+            items = [dict(r) for r in cur.fetchall()]
+
+            cur.execute(
+                """
+                SELECT toff.*
+                FROM tender_offers toff
+                WHERE toff.tender_item_id = ANY(%s)
+                ORDER BY CASE WHEN toff.offer_type='selected' THEN 0 WHEN toff.offer_type='final' THEN 1 ELSE 2 END,
+                         toff.price_per_unit ASC NULLS LAST,
+                         toff.id DESC;
+                """,
+                ([it["id"] for it in items] or [0],),
+            )
+            offers = [dict(r) for r in cur.fetchall()]
+        offers_by_item: Dict[int, List[Dict[str, Any]]] = {}
+        for off in offers:
+            offers_by_item.setdefault(off["tender_item_id"], []).append(off)
+        for it in items:
+            it["offers"] = offers_by_item.get(it["id"], [])
+        project_dict = dict(project)
+        project_dict["items"] = items
+        return project_dict
+
+    @app.route("/api/tenders", methods=["GET"])
+    def api_tenders_list():
+        try:
+            with db_connect() as conn:
+                ensure_schema_compare(conn)
+                with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                    cur.execute(
+                        """
+                        SELECT tp.id, tp.title, tp.created_at,
+                          (SELECT count(*) FROM tender_items ti WHERE ti.project_id = tp.id) AS items_count
+                        FROM tender_projects tp
+                        ORDER BY tp.created_at DESC, tp.id DESC;
+                        """
+                    )
+                    rows = cur.fetchall()
+            return jsonify({"projects": [dict(r) for r in rows]})
+        except Exception as e:
+            return jsonify({"error": "internal error", "details": str(e)}), 500
+
+    @app.route("/api/tenders", methods=["POST"])
+    def api_tenders_create():
+        upload = request.files.get("file")
+        if not upload:
+            return jsonify({"error": "file is required"}), 400
+        title = (request.form.get("title") or upload.filename or "Тендер").strip() or "Тендер"
+        try:
+            with db_connect() as conn:
+                ensure_schema_compare(conn)
+                category_map = get_category_map(conn)
+                df = pd.read_excel(upload.stream)
+                cols = {str(c).strip().lower(): idx for idx, c in enumerate(df.columns)}
+
+                def pick(*names):
+                    for n in names:
+                        if n in cols:
+                            return cols[n]
+                    return None
+
+                idx_name = pick("наименование", "name", "товар", "product")
+                if idx_name is None:
+                    return jsonify({"error": "Колонка 'Наименование' не найдена"}), 400
+                idx_qty = pick("кол-во", "количество", "qty", "quantity")
+                idx_unit = pick("ед", "единица", "unit", "ед.")
+                idx_cat = pick("категория", "category")
+
+                with conn.cursor() as cur:
+                    cur.execute("INSERT INTO tender_projects(title) VALUES (%s) RETURNING id;", (title,))
+                    pid = cur.fetchone()[0]
+
+                    items_to_insert = []
+                    for i, row in enumerate(df.itertuples(index=False), start=1):
+                        row_list = list(row)
+                        name_val = str(row_list[idx_name]).strip() if idx_name is not None else ""
+                        if not name_val:
+                            continue
+                        qty_val = None
+                        if idx_qty is not None and idx_qty < len(row_list):
+                            try:
+                                qty_val = float(row_list[idx_qty]) if row_list[idx_qty] not in (None, "") else None
+                            except Exception:
+                                qty_val = None
+                        unit_val = None
+                        if idx_unit is not None and idx_unit < len(row_list):
+                            unit_val = str(row_list[idx_unit]).strip() or None
+                        cat_val = None
+                        if idx_cat is not None and idx_cat < len(row_list):
+                            cat_val = normalize_category_value(row_list[idx_cat])
+                        category_id = category_map.get(cat_val) if cat_val else None
+                        items_to_insert.append((pid, i, name_val, qty_val, unit_val, category_id))
+
+                    if items_to_insert:
+                        execute_values(
+                            cur,
+                            """
+                            INSERT INTO tender_items(project_id, row_no, name_input, qty, unit_input, category_id)
+                            VALUES %s
+                            """,
+                            items_to_insert,
+                        )
+                    conn.commit()
+
+                with db_connect() as conn2:
+                    proj = _load_project(conn2, pid)
+                return jsonify({"project": proj})
+        except Exception as e:
+            return jsonify({"error": "internal error", "details": str(e)}), 500
+
+    @app.route("/api/tenders/<int:project_id>", methods=["GET"])
+    def api_tenders_get(project_id: int):
+        try:
+            with db_connect() as conn:
+                ensure_schema_compare(conn)
+                proj = _load_project(conn, project_id)
+            if not proj:
+                return jsonify({"error": "not found"}), 404
+            proj["items"] = [
+                {k: _json_safe(v) for k, v in it.items()} if isinstance(it, dict) else it for it in proj.get("items", [])
+            ]
+            for it in proj.get("items", []):
+                if isinstance(it, dict) and "offers" in it:
+                    it["offers"] = [{k: _json_safe(v) for k, v in off.items()} for off in it["offers"]]
+            return jsonify({"project": proj})
+        except Exception as e:
+            return jsonify({"error": "internal error", "details": str(e)}), 500
+
+    @app.route("/api/tenders/<int:project_id>", methods=["DELETE"])
+    def api_tenders_delete(project_id: int):
+        try:
+            with db_connect() as conn:
+                ensure_schema_compare(conn)
+                with conn.cursor() as cur:
+                    cur.execute("DELETE FROM tender_projects WHERE id=%s RETURNING id;", (project_id,))
+                    if not cur.fetchone():
+                        return jsonify({"error": "not found"}), 404
+                conn.commit()
+            return jsonify({"status": "ok"})
+        except Exception as e:
+            return jsonify({"error": "internal error", "details": str(e)}), 500
+
+    def _snapshot_offer(row: Dict[str, Any], supplier_name: str, category_id: Optional[int]):
+        return {
+            "supplier_id": row.get("supplier_id"),
+            "supplier_item_id": row.get("id"),
+            "supplier_name": supplier_name,
+            "name_raw": row.get("name_raw"),
+            "unit": row.get("unit"),
+            "price": row.get("price"),
+            "base_unit": row.get("base_unit"),
+            "base_qty": row.get("base_qty"),
+            "price_per_unit": row.get("price_per_unit"),
+            "category_id": category_id or row.get("category_id"),
+        }
+
+    @app.route("/api/tenders/items/<int:item_id>/select", methods=["POST"])
+    def api_tenders_select(item_id: int):
+        data = request.get_json(silent=True) or {}
+        supplier_item_id = data.get("supplier_item_id")
+        if not supplier_item_id:
+            return jsonify({"error": "supplier_item_id is required"}), 400
+        try:
+            with db_connect() as conn:
+                ensure_schema_compare(conn)
+                with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                    cur.execute(
+                        "SELECT id, project_id, category_id, name_input FROM tender_items WHERE id=%s;",
+                        (item_id,),
+                    )
+                    item = cur.fetchone()
+                    if not item:
+                        return jsonify({"error": "item not found"}), 404
+
+                    cur.execute(
+                        """
+                        SELECT si.id, si.supplier_id, s.name AS supplier_name, si.name_raw, si.unit, si.price, si.base_unit, si.base_qty,
+                               si.price_per_unit, si.category_id, coalesce(si.name_normalized, si.name_raw) AS norm
+                        FROM supplier_items si
+                        JOIN suppliers s ON s.id = si.supplier_id
+                        WHERE si.id=%s;
+                        """,
+                        (supplier_item_id,),
+                    )
+                    base = cur.fetchone()
+                    if not base:
+                        return jsonify({"error": "supplier item not found"}), 404
+
+                    cur.execute("DELETE FROM tender_offers WHERE tender_item_id=%s;", (item_id,))
+
+                    snap = _snapshot_offer(base, base["supplier_name"], item.get("category_id"))
+                    cur.execute(
+                        """
+                        INSERT INTO tender_offers
+                          (tender_item_id, offer_type, supplier_id, supplier_item_id, supplier_name, name_raw, unit, price, base_unit, base_qty, price_per_unit, category_id)
+                        VALUES (%(item_id)s, 'selected', %(supplier_id)s, %(supplier_item_id)s, %(supplier_name)s, %(name_raw)s, %(unit)s,
+                                %(price)s, %(base_unit)s, %(base_qty)s, %(price_per_unit)s, %(category_id)s)
+                        RETURNING id;
+                        """,
+                        {"item_id": item_id, **snap},
+                    )
+                    selected_id = cur.fetchone()[0]
+
+                    params = {
+                        "category_id": item.get("category_id") or base.get("category_id"),
+                        "norm": base.get("norm"),
+                        "item_id": base["id"],
+                    }
+                    where = ["si.is_active IS TRUE", "si.id <> %(item_id)s"]
+                    if params["category_id"]:
+                        where.append("si.category_id = %(category_id)s")
+                    sql_alt = f"""
+                        SELECT si.id, si.supplier_id, s.name AS supplier_name, si.name_raw, si.unit, si.price, si.base_unit, si.base_qty,
+                               si.price_per_unit, si.category_id
+                        FROM supplier_items si
+                        JOIN suppliers s ON s.id = si.supplier_id
+                        WHERE {' AND '.join(where)}
+                        ORDER BY si.price_per_unit ASC NULLS LAST, si.id DESC
+                        LIMIT 15;
+                    """
+                    cur.execute(sql_alt, params)
+                    alts = cur.fetchall()
+                    for alt in alts:
+                        snap_alt = _snapshot_offer(alt, alt["supplier_name"], item.get("category_id"))
+                        cur.execute(
+                            """
+                            INSERT INTO tender_offers
+                              (tender_item_id, offer_type, supplier_id, supplier_item_id, supplier_name, name_raw, unit, price, base_unit, base_qty, price_per_unit, category_id)
+                            VALUES (%(item_id)s, 'alternative', %(supplier_id)s, %(supplier_item_id)s, %(supplier_name)s, %(name_raw)s, %(unit)s,
+                                    %(price)s, %(base_unit)s, %(base_qty)s, %(price_per_unit)s, %(category_id)s);
+                            """,
+                            {"item_id": item_id, **snap_alt},
+                        )
+
+                    cur.execute(
+                        "UPDATE tender_items SET selected_offer_id=%s WHERE id=%s;",
+                        (selected_id, item_id),
+                    )
+                conn.commit()
+            with db_connect() as conn2:
+                proj = _load_project(conn2, item["project_id"])
+            return jsonify({"project": proj})
+        except Exception as e:
+            return jsonify({"error": "internal error", "details": str(e)}), 500
+
+    @app.route("/api/tenders/items/<int:item_id>/offers", methods=["GET"])
+    def api_tenders_offers(item_id: int):
+        try:
+            with db_connect() as conn:
+                ensure_schema_compare(conn)
+                cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+                cur.execute(
+                    """
+                    SELECT ti.project_id, ti.id, ti.name_input FROM tender_items ti WHERE ti.id=%s;
+                    """,
+                    (item_id,),
+                )
+                item = cur.fetchone()
+                if not item:
+                    return jsonify({"error": "not found"}), 404
+                cur.execute(
+                    "SELECT * FROM tender_offers WHERE tender_item_id=%s ORDER BY created_at DESC;",
+                    (item_id,),
+                )
+                offers = [dict(r) for r in cur.fetchall()]
+            return jsonify({"item": dict(item), "offers": offers})
+        except Exception as e:
+            return jsonify({"error": "internal error", "details": str(e)}), 500
+
+    @app.route("/api/tenders/items/<int:item_id>/finalize", methods=["POST"])
+    def api_tenders_finalize(item_id: int):
+        data = request.get_json(silent=True) or {}
+        offer_id = data.get("offer_id")
+        if not offer_id:
+            return jsonify({"error": "offer_id is required"}), 400
+        try:
+            with db_connect() as conn:
+                ensure_schema_compare(conn)
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT project_id FROM tender_items WHERE id=%s;",
+                        (item_id,),
+                    )
+                    row = cur.fetchone()
+                    if not row:
+                        return jsonify({"error": "not found"}), 404
+                    cur.execute(
+                        "UPDATE tender_offers SET offer_type='final' WHERE id=%s AND tender_item_id=%s;",
+                        (offer_id, item_id),
+                    )
+                    cur.execute(
+                        "UPDATE tender_items SET selected_offer_id=%s WHERE id=%s;",
+                        (offer_id, item_id),
+                    )
+                conn.commit()
+            return jsonify({"status": "ok"})
+        except Exception as e:
+            return jsonify({"error": "internal error", "details": str(e)}), 500
+
+    @app.route("/api/tenders/<int:project_id>/export", methods=["POST"])
+    def api_tenders_export(project_id: int):
+        try:
+            with db_connect() as conn:
+                ensure_schema_compare(conn)
+                proj = _load_project(conn, project_id)
+                if not proj:
+                    return jsonify({"error": "not found"}), 404
+                rows: List[List[Any]] = []
+                for it in proj.get("items", []):
+                    final_offer = None
+                    for off in it.get("offers", []):
+                        if off.get("offer_type") == "final" or off.get("id") == it.get("selected_offer_id"):
+                            final_offer = off
+                            break
+                    rows.append([it.get("row_no"), it.get("name_input"), it.get("qty"), it.get("unit_input"), it.get("category_id"), final_offer])
+
+                headers = [
+                    "№ строки",
+                    "Номенклатура",
+                    "Кол-во",
+                    "Ед.",
+                    "Категория",
+                    "Поставщик",
+                    "Товар",
+                    "Ед. прайса",
+                    "Цена",
+                    "Базовая ед.",
+                    "Баз. кол-во",
+                    "Цена за баз. ед.",
+                    "Сумма",
+                ]
+
+                if Workbook is None:
+                    out = BytesIO()
+                    writer = csv.writer(out)
+                    writer.writerow(headers)
+                    for r in rows:
+                        offer = r[5] or {}
+                        sum_val = None
+                        try:
+                            if r[2] and offer.get("price_per_unit") and offer.get("base_qty"):
+                                sum_val = float(r[2]) * float(offer.get("price_per_unit")) * float(offer.get("base_qty"))
+                        except Exception:
+                            sum_val = None
+                        writer.writerow(
+                            [
+                                r[0],
+                                r[1],
+                                r[2],
+                                r[3],
+                                r[4],
+                                offer.get("supplier_name"),
+                                offer.get("name_raw"),
+                                offer.get("unit"),
+                                offer.get("price"),
+                                offer.get("base_unit"),
+                                offer.get("base_qty"),
+                                offer.get("price_per_unit"),
+                                sum_val,
+                            ]
+                        )
+                    out.seek(0)
+                    return send_file(out, mimetype="text/csv", as_attachment=True, download_name="tender.csv")
+
+                wb = Workbook()
+                ws = wb.active
+                ws.title = "Тендер"
+                ws.append(headers)
+                for c in ws[1]:
+                    c.font = Font(bold=True)
+                    c.alignment = Alignment(vertical="center")
+                for r in rows:
+                    offer = r[5] or {}
+                    sum_val = None
+                    try:
+                        if r[2] and offer.get("price_per_unit") and offer.get("base_qty"):
+                            sum_val = float(r[2]) * float(offer.get("price_per_unit")) * float(offer.get("base_qty"))
+                    except Exception:
+                        sum_val = None
+                    ws.append(
+                        [
+                            r[0],
+                            r[1],
+                            r[2],
+                            r[3],
+                            r[4],
+                            offer.get("supplier_name"),
+                            offer.get("name_raw"),
+                            offer.get("unit"),
+                            offer.get("price"),
+                            offer.get("base_unit"),
+                            offer.get("base_qty"),
+                            offer.get("price_per_unit"),
+                            sum_val,
+                        ]
+                    )
+                bio = BytesIO()
+                wb.save(bio)
+                bio.seek(0)
+                return send_file(
+                    bio,
+                    mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    as_attachment=True,
+                    download_name=f"tender_{project_id}.xlsx",
+                )
         except Exception as e:
             return jsonify({"error": "internal error", "details": str(e)}), 500
 
@@ -374,6 +926,7 @@ def create_app() -> Flask:
         supplier_id = (request.args.get("supplier_id") or "").strip()
         sort = (request.args.get("sort") or "rank").strip()
         limit = request.args.get("limit") or "60"
+        category_ids_raw = request.args.get("category_ids") or request.args.get("category_id")
 
         try:
             limit_i = int(limit)
@@ -384,12 +937,21 @@ def create_app() -> Flask:
         params: Dict[str, Any] = {"limit": limit_i}
         where = ["si.is_active IS TRUE"]
 
+        if category_ids_raw:
+            try:
+                cids = [int(c) for c in str(category_ids_raw).split(",") if str(c).strip()]
+            except Exception:
+                cids = []
+            if cids:
+                params["category_ids"] = tuple(cids)
+                where.append("si.category_id = ANY(%(category_ids)s)")
+
         if supplier_id:
             params["supplier_id"] = int(supplier_id)
             where.append("si.supplier_id = %(supplier_id)s")
 
         # whitelist сортировки
-        if sort not in ("rank", "price_asc", "price_desc"):
+        if sort not in ("rank", "price_asc", "price_desc", "ppu_asc"):
             sort = "rank"
 
         if q:
@@ -398,6 +960,7 @@ def create_app() -> Flask:
                 "rank": "rank DESC, si.price ASC NULLS LAST, si.id DESC",
                 "price_asc": "si.price ASC NULLS LAST, rank DESC, si.id DESC",
                 "price_desc": "si.price DESC NULLS LAST, rank DESC, si.id DESC",
+                "ppu_asc": "si.price_per_unit ASC NULLS LAST, rank DESC, si.id DESC",
             }[sort]
 
             sql = f"""
@@ -408,6 +971,10 @@ def create_app() -> Flask:
                   si.name_raw,
                   si.unit,
                   si.price,
+                  si.base_unit,
+                  si.base_qty,
+                  si.price_per_unit,
+                  si.category_id,
                   ts_rank(to_tsvector('russian', si.name_raw),
                           websearch_to_tsquery('russian', %(q)s)) AS rank
                 FROM supplier_items si
@@ -425,6 +992,7 @@ def create_app() -> Flask:
                 "rank": "si.id DESC",
                 "price_asc": "si.price ASC NULLS LAST, si.id DESC",
                 "price_desc": "si.price DESC NULLS LAST, si.id DESC",
+                "ppu_asc": "si.price_per_unit ASC NULLS LAST, si.id DESC",
             }[sort]
 
             sql = f"""
@@ -435,6 +1003,10 @@ def create_app() -> Flask:
                   si.name_raw,
                   si.unit,
                   si.price,
+                  si.base_unit,
+                  si.base_qty,
+                  si.price_per_unit,
+                  si.category_id,
                   0.0::float AS rank
                 FROM supplier_items si
                 JOIN suppliers s ON s.id = si.supplier_id
