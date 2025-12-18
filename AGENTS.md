@@ -9,7 +9,6 @@
 - Work only via PRs (no direct pushes to main/staging).
 - Keep `/health` stable.
 - Keep changes small and focused.
-# AGENTS.md
 
 ## Project
 iirest / Pricelist Search — Flask web app for supplier price-lists:
