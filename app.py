@@ -29,7 +29,7 @@ except Exception:
     Workbook = None  # fallback на CSV
 
 
-APP_TITLE = os.getenv("APP_TITLE", "ChefPrice")
+APP_TITLE = os.getenv("APP_TITLE", "iirest")
 
 
 def create_app() -> Flask:
