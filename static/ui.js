@@ -44,7 +44,7 @@ function fmtScore(s) {
 function fmtPrice(p) {
   if (p === '-' || p === null) return '-';
   const n = Number(p);
-  if (Number.isFinite(n)) return String(Math.round(n));
+  if (Number.isFinite(n)) return n.toFixed(2);
   return String(p);
 }
 
