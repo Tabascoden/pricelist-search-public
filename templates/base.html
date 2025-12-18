@@ -341,7 +341,9 @@
     }
     function fmtPrice(p){
       const n = Number(p);
-      return Number.isNaN(n) ? (p ?? "") : n.toLocaleString("ru-RU", {minimumFractionDigits: 2, maximumFractionDigits: 2});
+      if (Number.isNaN(n)) return p ?? "";
+      const rounded = Math.round(n);
+      return rounded.toLocaleString("ru-RU", {minimumFractionDigits: 0, maximumFractionDigits: 0});
     }
 
     function loadCart(){
