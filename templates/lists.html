@@ -1,6 +1,26 @@
 {% extends "base.html" %}
 {% block content %}
 
+<style>
+  /* Стили для модального окна */
+  .modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(30, 27, 75, 0.4);
+    backdrop-filter: blur(4px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+    opacity: 1;
+    transition: opacity 0.2s;
+  }
+  .modal-overlay.hidden {
+    display: none !important;
+    opacity: 0;
+  }
+</style>
+
 <div class="card">
   <div class="cardHeader">
     <div>
@@ -31,13 +51,13 @@
 </div>
 
 <!-- Modal -->
-<div id="modal" class="hidden" style="position:fixed; inset:0; background:rgba(0,0,0,0.5); display:flex; align-items:center; justify-content:center; z-index:100;">
-  <div class="card" style="width:100%; max-width:400px; margin:0 20px;">
-    <h3 id="modalTitle">Поставщик</h3>
+<div id="modal" class="modal-overlay hidden">
+  <div class="card" style="width:100%; max-width:400px; margin:0 20px; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.25);">
+    <h3 id="modalTitle">Добавить поставщика</h3>
     <div style="margin-top:16px;">
-      <input class="input" id="supName" placeholder="Название компании">
+      <input class="input" id="supName" placeholder="Название компании (например: Блэкбери)">
     </div>
-    <div style="margin-top:20px; display:flex; justify-content:flex-end; gap:10px;">
+    <div style="margin-top:24px; display:flex; justify-content:flex-end; gap:12px;">
       <button class="btn" onclick="$('modal').classList.add('hidden')">Отмена</button>
       <button class="btn primary" id="btnSaveSupplier">Сохранить</button>
     </div>
@@ -49,47 +69,60 @@
 {% block scripts %}
 <script>
   async function loadSuppliers(){
-    const r = await fetch("/api/suppliers");
-    const j = await r.json();
-    const tbody = $("supplierRows");
-    tbody.innerHTML = "";
+    try {
+      const r = await fetch("/api/suppliers");
+      const j = await r.json();
+      const tbody = $("supplierRows");
+      tbody.innerHTML = "";
 
-    (j.suppliers || []).forEach(s => {
-      const tr = document.createElement("tr");
-      const date = s.last_uploaded_at ? new Date(s.last_uploaded_at).toLocaleString() : "—";
-      tr.innerHTML = `
-        <td><div style="font-weight:600">${esc(s.name)}</div></td>
-        <td><div style="font-size:12px; color:var(--text-muted)">${esc(s.last_filename || "Нет файла")}</div></td>
-        <td><span class="badge">${s.rows_imported || 0}</span></td>
-        <td style="font-size:12px">${date}</td>
-        <td>
-          <div style="display:flex; gap:8px;">
-            <label class="btn" style="height:32px; font-size:12px; cursor:pointer">
-              📁 <input type="file" style="display:none" onchange="uploadPrice(${s.id}, this)">
-            </label>
-            <button class="btn" style="height:32px; color:var(--text-muted)" onclick="deleteSupplier(${s.id})">✕</button>
-          </div>
-        </td>
-      `;
-      tbody.appendChild(tr);
-    });
+      (j.suppliers || []).forEach(s => {
+        const tr = document.createElement("tr");
+        const date = s.last_uploaded_at ? new Date(s.last_uploaded_at).toLocaleString('ru-RU') : "—";
+        tr.innerHTML = `
+          <td><div style="font-weight:700">${esc(s.name)}</div></td>
+          <td><div style="font-size:12px; color:#64748b">${esc(s.last_filename || "Нет файла")}</div></td>
+          <td><span class="badge">${s.rows_imported || 0}</span></td>
+          <td style="font-size:12px">${date}</td>
+          <td>
+            <div style="display:flex; gap:8px;">
+              <label class="btn" style="height:36px; padding:0 12px; cursor:pointer" title="Загрузить прайс">
+                📁 <input type="file" style="display:none" onchange="uploadPrice(${s.id}, this)">
+              </label>
+              <button class="btn danger" style="height:36px; padding:0 12px;" onclick="deleteSupplier(${s.id})" title="Удалить">✕</button>
+            </div>
+          </td>
+        `;
+        tbody.appendChild(tr);
+      });
+    } catch(e) {
+      console.error("Failed to load suppliers", e);
+    }
   }
 
   $("btnAddSupplier").addEventListener("click", () => {
     $("supName").value = "";
     $("modal").classList.remove("hidden");
+    $("supName").focus();
   });
 
   $("btnSaveSupplier").addEventListener("click", async () => {
     const name = $("supName").value.trim();
     if(!name) return;
-    await fetch("/api/suppliers", {
-      method: "POST",
-      headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({name})
-    });
-    $("modal").classList.add("hidden");
-    loadSuppliers();
+    
+    try {
+      const r = await fetch("/api/suppliers", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({name})
+      });
+      if(r.ok) {
+        $("modal").classList.add("hidden");
+        toast("Добавлено", `Поставщик ${name} создан`);
+        loadSuppliers();
+      }
+    } catch(e) {
+      toast("Ошибка", "Не удалось сохранить");
+    }
   });
 
   async function uploadPrice(id, input){
@@ -98,23 +131,34 @@
     const fd = new FormData();
     fd.append("file", file);
     toast("Загрузка...", "Прайс-лист обрабатывается");
-    const r = await fetch(`/api/upload/${id}`, {method: "POST", body: fd});
-    const j = await r.json();
-    if(j.status === "ok"){
-      toast("Успех", `Загружено ${j.count || 0} позиций`);
-      loadSuppliers();
-    } else {
-      alert("Ошибка загрузки: " + (j.details || j.error));
+    try {
+      const r = await fetch(`/api/upload/${id}`, {method: "POST", body: fd});
+      const j = await r.json();
+      if(j.status === "ok"){
+        toast("Успех", `Загружено ${j.count || 0} позиций`);
+        loadSuppliers();
+      } else {
+        alert("Ошибка загрузки: " + (j.details || j.error));
+      }
+    } catch(e) {
+      toast("Ошибка", "Сбой при загрузке");
     }
+    input.value = ""; // Сброс для возможности повторного выбора того же файла
   }
 
   async function deleteSupplier(id){
-    if(!confirm("Удалить поставщика и все его цены?")) return;
-    const r = await fetch(`/api/suppliers/${id}`, {method: "DELETE"});
-    if(r.ok) loadSuppliers();
-    else {
-      const j = await r.json();
-      alert(j.details || j.error);
+    if(!confirm("Удалить поставщика и все его цены? Это действие нельзя отменить.")) return;
+    try {
+      const r = await fetch(`/api/suppliers/${id}`, {method: "DELETE"});
+      if(r.ok) {
+        toast("Удалено", "Поставщик успешно удален");
+        loadSuppliers();
+      } else {
+        const j = await r.json();
+        alert(j.details || j.error);
+      }
+    } catch(e) {
+      toast("Ошибка", "Не удалось удалить");
     }
   }
 

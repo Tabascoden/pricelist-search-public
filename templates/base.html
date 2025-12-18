@@ -12,7 +12,7 @@
       --bg: #f5f7ff;
       --surface: #ffffff;
       --text: #1e1b4b;
-      --text-muted: #6366f1; /* Чуть больше цвета даже в приглушенном тексте */
+      --text-muted: #6366f1;
       --primary: #6366f1;
       --primary-hover: #4f46e5;
       --accent: #ec4899;
@@ -22,6 +22,9 @@
       --shadow-sm: 0 1px 3px 0 rgb(0 0 0 / 0.1);
       --shadow: 0 10px 15px -3px rgb(0 0 0 / 0.05), 0 4px 6px -4px rgb(0 0 0 / 0.05);
     }
+
+    /* Глобальный класс для скрытия элементов */
+    .hidden { display: none !important; }
 
     * { box-sizing: border-box; }
     body {
@@ -58,7 +61,7 @@
     .brand {
       display: flex;
       align-items: center;
-      gap: 12px;
+      gap: 8px;
     }
     .brand b {
       font-size: 20px;
@@ -236,16 +239,6 @@
       from { transform: translateX(100%) scale(0.9); opacity: 0; }
       to { transform: translateX(0) scale(1); opacity: 1; }
     }
-    .toast.hidden { display: none; }
-
-    /* Mobile */
-    @media (max-width: 640px) {
-      .headerInner { height: auto; padding: 16px 20px; flex-direction: column; gap: 16px; }
-      .nav { width: 100%; overflow-x: auto; padding-bottom: 4px; justify-content: center; }
-      .container { margin: 24px auto; }
-      .controls { flex-direction: column; }
-      .btn, .input, .select { width: 100%; }
-    }
   </style>
 </head>
 <body>
@@ -302,6 +295,7 @@
     let toastTimer = null;
     function toast(title, subtitle){
       const t = $("toast");
+      if(!t) return;
       $("toastTitle").textContent = title;
       $("toastSubtitle").textContent = subtitle;
       t.classList.remove("hidden");
