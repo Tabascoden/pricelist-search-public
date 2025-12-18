@@ -8,7 +8,7 @@ import os
 import re
 import shutil
 from datetime import datetime
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -1238,6 +1238,9 @@ def create_app() -> Flask:
         data = request.get_json(silent=True) or {}
         items = data.get("items") or []
 
+        def round_money(value: float) -> int:
+            return int(Decimal(str(value)).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
         # нормализация входа
         norm: List[Dict[str, Any]] = []
         for it in items:
@@ -1285,8 +1288,9 @@ def create_app() -> Flask:
             w = csv.writer(wrapper, delimiter=";")
             w.writerow(headers)
             for it in norm:
-                s = round(it["price"] * it["qty"], 2)
-                w.writerow([it["supplier_name"], it["name_raw"], it["qty"], it["unit"], it["price"], s])
+                s = round_money(it["price"] * it["qty"])
+                price = round_money(it["price"])
+                w.writerow([it["supplier_name"], it["name_raw"], it["qty"], it["unit"], price, s])
             wrapper.flush()
             out.seek(0)
             return send_file(out, mimetype="text/csv; charset=utf-8", as_attachment=True, download_name="zakaz.csv")
@@ -1302,8 +1306,9 @@ def create_app() -> Flask:
         ws.freeze_panes = "A2"
 
         for it in norm:
-            s = round(it["price"] * it["qty"], 2)
-            ws.append([it["supplier_name"], it["name_raw"], it["qty"], it["unit"], it["price"], s])
+            s = round_money(it["price"] * it["qty"])
+            price = round_money(it["price"])
+            ws.append([it["supplier_name"], it["name_raw"], it["qty"], it["unit"], price, s])
 
         widths = [22, 60, 10, 10, 14, 14]
         for i, w in enumerate(widths, start=1):
