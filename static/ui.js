@@ -43,11 +43,16 @@ function fmtScore(s) {
 
 function fmtPrice(p) {
   if (p === '-' || p === null) return '-';
-  const n = Number(p);
+  const raw = p ?? '';
+  let n = Number(raw);
+  if (!Number.isFinite(n)) {
+    const normalized = String(raw).replace(/\s+/g, '').replace(',', '.');
+    n = Number(normalized);
+  }
   if (Number.isFinite(n)) {
     return Math.round(n).toLocaleString('ru-RU', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
   }
-  return String(p);
+  return String(raw);
 }
 
 function setStatus(text) {

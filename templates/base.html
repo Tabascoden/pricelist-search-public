@@ -340,8 +340,13 @@
       return String(s ?? "").replace(/[&<>"']/g, (m)=>({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;" }[m]));
     }
     function fmtPrice(p){
-      const n = Number(p);
-      if (!Number.isFinite(n)) return p ?? "";
+      const raw = p ?? "";
+      let n = Number(raw);
+      if (!Number.isFinite(n)) {
+        const normalized = String(raw).replace(/\s+/g, "").replace(",", ".");
+        n = Number(normalized);
+      }
+      if (!Number.isFinite(n)) return raw;
       return Math.round(n).toLocaleString("ru-RU", {minimumFractionDigits: 0, maximumFractionDigits: 0});
     }
 
