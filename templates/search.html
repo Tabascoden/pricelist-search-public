@@ -30,21 +30,24 @@
     <button class="btn primary" id="btnSearch">Найти</button>
     <button class="btn" id="btnClear">Сбросить</button>
   </div>
+
+  <div id="resultsMeta" class="sub" style="margin-top:12px; color:#4338ca; font-weight:600"></div>
 </div>
 
 <div class="tableWrap">
   <table>
     <thead>
       <tr>
-        <th style="width:45%">Наименование</th>
-        <th style="width:20%">Поставщик</th>
+        <th style="width:40%">Наименование</th>
+        <th style="width:18%">Поставщик</th>
         <th style="width:10%">Ед.</th>
         <th style="width:12%">Цена</th>
-        <th style="width:13%">Действие</th>
+        <th style="width:20%">Количество</th>
+        <th style="width:10%">Действие</th>
       </tr>
     </thead>
     <tbody id="rows">
-      <tr><td colspan="5" style="text-align:center; padding:40px; color:var(--text-muted)">Загрузка товаров...</td></tr>
+      <tr><td colspan="6" style="text-align:center; padding:40px; color:var(--text-muted)">Загрузка товаров...</td></tr>
     </tbody>
   </table>
 </div>
@@ -65,12 +68,12 @@
     } catch(e) {}
   }
 
-  function addToCartFromRow(it){
-    const qty = 1;
+  function addToCartFromRow(it, qty){
+    const safeQty = Math.max(1, Number(qty) || 1);
     const cart = loadCart();
     const key = String(it.id);
     if(cart[key]){
-      cart[key].qty += qty;
+      cart[key].qty += safeQty;
     } else {
       cart[key] = {
         id: it.id,
@@ -79,7 +82,7 @@
         price: Number(it.price),
         supplier_id: it.supplier_id,
         supplier_name: it.supplier_name,
-        qty: qty
+        qty: safeQty
       };
     }
     saveCart(cart);
@@ -90,22 +93,33 @@
     const tbody = $("rows");
     tbody.innerHTML = "";
     if(!items.length){
-      tbody.innerHTML = `<tr><td colspan="5" style="text-align:center; padding:40px; color:var(--text-muted)">Ничего не найдено</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="6" style="text-align:center; padding:40px; color:var(--text-muted)">Ничего не найдено</td></tr>`;
+      $("resultsMeta").textContent = "";
       return;
     }
+    $("resultsMeta").textContent = `Найдено позиций: ${items.length}`;
     items.forEach(it => {
       const tr = document.createElement("tr");
       tr.innerHTML = `
-        <td><div style="font-weight:500">${esc(it.name_raw)}</div></td>
-        <td><span class="badge">${esc(it.supplier_name)}</span></td>
-        <td>${esc(it.unit || "—")}</td>
-        <td class="accent">${fmtPrice(it.price)} ₽</td>
-        <td>
-          <button class="btn" style="height:32px; font-size:12px;" data-add="${it.id}">В корзину</button>
+        <td data-label="Наименование"><div style="font-weight:600; font-size:15px">${esc(it.name_raw)}</div></td>
+        <td data-label="Поставщик"><span class="badge">${esc(it.supplier_name)}</span></td>
+        <td data-label="Ед.">${esc(it.unit || "—")}</td>
+        <td data-label="Цена" class="accent">${fmtPrice(it.price)} ₽</td>
+        <td data-label="Количество">
+          <div style="display:flex; align-items:center; gap:8px; width:100%;">
+            <input type="number" min="1" step="1" value="1" class="input qtyInput" style="height:38px; padding:0 10px; width:110px;" aria-label="Количество" />
+            <div style="font-size:12px; color:#94a3b8;">${esc(it.unit || "шт.")}</div>
+          </div>
+        </td>
+        <td data-label="Действие">
+          <button class="btn primary" style="height:38px; font-size:13px; width:100%;" data-add="${it.id}">В корзину</button>
         </td>
       `;
       tbody.appendChild(tr);
-      tr.querySelector(`[data-add="${it.id}"]`).addEventListener("click", () => addToCartFromRow(it));
+      const qtyInput = tr.querySelector(".qtyInput");
+      tr.querySelector(`[data-add="${it.id}"]`).addEventListener("click", () => {
+        addToCartFromRow(it, qtyInput?.value || 1);
+      });
     });
   }
 

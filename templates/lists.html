@@ -135,7 +135,10 @@
       const r = await fetch(`/api/upload/${id}`, {method: "POST", body: fd});
       const j = await r.json();
       if(j.status === "ok"){
-        toast("Успех", `Загружено ${j.count || 0} позиций`);
+        const statsImported = Array.isArray(j.stats) ? j.stats.reduce((acc, s) => acc + (Number(s.imported) || 0), 0) : 0;
+        const imported = Number(j.imported || j.count || statsImported || 0);
+        const summary = imported > 0 ? `Загружено ${imported} позиций` : "Импорт завершен";
+        toast("Успех", summary);
         loadSuppliers();
       } else {
         alert("Ошибка загрузки: " + (j.details || j.error));

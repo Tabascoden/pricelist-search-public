@@ -239,6 +239,72 @@
       from { transform: translateX(100%) scale(0.9); opacity: 0; }
       to { transform: translateX(0) scale(1); opacity: 1; }
     }
+
+    /* Mobile layout */
+    @media (max-width: 960px) {
+      .headerInner {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 12px;
+        padding: 12px 16px;
+        height: auto;
+      }
+      .nav {
+        width: 100%;
+        overflow-x: auto;
+        padding-bottom: 4px;
+      }
+      .nav a {
+        white-space: nowrap;
+        background: #f5f7ff;
+        border: 1px solid var(--border);
+      }
+      .container {
+        margin: 20px auto;
+        padding: 0 16px;
+      }
+      .card {
+        padding: 20px;
+      }
+      .cardHeader {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+      .controls {
+        display: grid;
+        grid-template-columns: 1fr;
+      }
+      .controls .input,
+      .controls .select,
+      .controls .btn {
+        width: 100%;
+      }
+      .tableWrap {
+        border-radius: 14px;
+      }
+      table thead { display: none; }
+      table tbody tr {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 10px;
+        border-bottom: 12px solid var(--bg);
+        padding: 12px 16px;
+      }
+      table tbody tr:hover td { background: transparent; }
+      table tbody td {
+        border: none;
+        padding: 0;
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        font-size: 14px;
+      }
+      table tbody td::before {
+        content: attr(data-label);
+        color: #64748b;
+        font-weight: 600;
+      }
+    }
   </style>
 </head>
 <body>
