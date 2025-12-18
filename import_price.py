@@ -28,6 +28,7 @@ def normalize_name(name_raw: str) -> str:
         return ""
     text = str(name_raw).lower()
     text = text.replace("ё", "е")
+    # Удаляем лишние спецсимволы, оставляя важные для характеристик (.,%*-)
     text = re.sub(r"[^a-zа-я0-9\s\.\,\%\*\-\/]+", " ", text)
     text = re.sub(r"\s+", " ", text)
     return text.strip()
@@ -41,7 +42,15 @@ def detect_category(name_raw: str) -> Optional[str]:
         return "canned"
     if re.search(r"замороз|frozen|с/м|свежеморож", lowered):
         return "frozen"
-    if re.search(r"овощи|фрукты|зелень|ягоды|салат", lowered):
+    if re.search(r"говя|свин|кури|филе|мясо|фарш|колбас|сосис|бекон|утк|индейк", lowered):
+        return "meat"
+    if re.search(r"рыба|лосось|форель|семга|кревет|кальмар|треска|мидии|морепродукт", lowered):
+        return "fish"
+    if re.search(r"молоко|сливки|сметана|творог|сыр|йогурт|масло слив", lowered):
+        return "dairy"
+    if re.search(r"мука|сахар|соль|крупа|рис|гречка|макарон|паста|масло раст|специи", lowered):
+        return "grocery"
+    if re.search(r"овощи|фрукты|зелень|ягоды|салат|томат|огур|капуст|картоф|лук", lowered):
         return "fresh"
     return "fresh"
 
@@ -150,6 +159,23 @@ def ensure_schema_compare(conn):
         cur.execute("ALTER TABLE supplier_items ADD COLUMN IF NOT EXISTS price_per_unit numeric(12,4);")
         cur.execute("ALTER TABLE supplier_items ADD COLUMN IF NOT EXISTS category_id int REFERENCES categories(id);")
         cur.execute("ALTER TABLE supplier_items ADD COLUMN IF NOT EXISTS category_path text;")
+        
+        # Заполняем новые категории
+        cur.execute(
+            """
+            INSERT INTO categories(name, code)
+            SELECT * FROM (VALUES
+                ('Свежие продукты', 'fresh'),
+                ('Консервы/маринады', 'canned'),
+                ('Заморозка', 'frozen'),
+                ('Мясо/Птица', 'meat'),
+                ('Рыба/Морепродукты', 'fish'),
+                ('Молочка', 'dairy'),
+                ('Бакалея', 'grocery')
+            ) AS s(name, code)
+            WHERE NOT EXISTS (SELECT 1 FROM categories WHERE code = s.code);
+            """
+        )
     conn.commit()
 
 
