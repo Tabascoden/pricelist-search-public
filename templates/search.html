@@ -4,60 +4,52 @@
 <div class="card">
   <div class="cardHeader">
     <div>
-      <h2>Поиск</h2>
-      <div class="sub">Фильтр по поставщику + сортировка по цене. Добавляй позиции в корзину.</div>
+      <h2>Поиск продуктов</h2>
+      <div class="sub">Сравнивайте цены от всех поставщиков в реальном времени.</div>
     </div>
     <div class="right">
-      <a class="btn" href="/cart">Открыть корзину</a>
+      <a class="btn primary" href="/cart">Перейти в корзину</a>
     </div>
   </div>
 
   <div class="controls">
-    <input class="input" id="q" placeholder="Например: помидор, сыр, говядина…" autocomplete="off"/>
+    <input class="input" id="q" placeholder="Поиск товара (например: лосось, молоко 3.2%...)" autocomplete="off"/>
     <select class="select" id="supplier">
       <option value="">Все поставщики</option>
     </select>
     <select class="select" id="sort">
-      <option value="rank" selected>Релевантность</option>
-      <option value="price_asc">Цена ↑</option>
-      <option value="price_desc">Цена ↓</option>
+      <option value="rank">По релевантности</option>
+      <option value="price_asc">Сначала дешевле</option>
+      <option value="price_desc">Сначала дороже</option>
     </select>
     <select class="select" id="limit">
-      <option value="30">Показать 30</option>
-      <option value="60" selected>Показать 60</option>
-      <option value="120">Показать 120</option>
+      <option value="30">30 шт.</option>
+      <option value="60" selected>60 шт.</option>
+      <option value="120">120 шт.</option>
     </select>
     <button class="btn primary" id="btnSearch">Найти</button>
     <button class="btn" id="btnClear">Сбросить</button>
   </div>
 
-  <div class="sub" id="statusLine" style="margin-top:8px;">Пустой запрос покажет последние позиции.</div>
+  <div id="resultsMeta" class="sub" style="margin-top:12px; color:#4338ca; font-weight:600"></div>
 </div>
 
-<div class="card">
-  <div class="cardHeader">
-    <div>
-      <h3>Результаты</h3>
-      <div class="sub" id="countLine">—</div>
-    </div>
-  </div>
-
-  <div class="tableWrap">
-    <table>
-      <thead>
-        <tr>
-          <th style="width:44%">Товар</th>
-          <th style="width:18%">Поставщик</th>
-          <th style="width:10%">Ед.</th>
-          <th style="width:12%">Цена, руб</th>
-          <th style="width:16%">В корзину</th>
-        </tr>
-      </thead>
-      <tbody id="rows">
-        <tr><td colspan="5" class="sub">Сделай поиск — результаты появятся тут.</td></tr>
-      </tbody>
-    </table>
-  </div>
+<div class="tableWrap">
+  <table>
+    <thead>
+      <tr>
+        <th style="width:40%">Наименование</th>
+        <th style="width:18%">Поставщик</th>
+        <th style="width:10%">Ед.</th>
+        <th style="width:12%">Цена</th>
+        <th style="width:20%">Количество</th>
+        <th style="width:10%">Действие</th>
+      </tr>
+    </thead>
+    <tbody id="rows">
+      <tr><td colspan="6" style="text-align:center; padding:40px; color:var(--text-muted)">Загрузка товаров...</td></tr>
+    </tbody>
+  </table>
 </div>
 
 {% endblock %}
@@ -65,104 +57,90 @@
 {% block scripts %}
 <script>
   async function loadSuppliers(){
-    try{
+    try {
       const r = await fetch("/api/suppliers");
       const j = await r.json();
       const sel = $("supplier");
       sel.innerHTML = `<option value="">Все поставщики</option>`;
-      for(const s of (j.suppliers || [])){
+      (j.suppliers || []).forEach(s => {
         sel.insertAdjacentHTML("beforeend", `<option value="${esc(s.id)}">${esc(s.name)}</option>`);
-      }
-    }catch(e){}
+      });
+    } catch(e) {}
   }
 
-  function addToCartFromRow(it){
-    const qtyEl = document.querySelector(`#qty_${it.id}`);
-    const qty = Math.max(1, Number(qtyEl?.value || 1) || 1);
-
+  function addToCartFromRow(it, qty){
+    const safeQty = Math.max(1, Number(qty) || 1);
     const cart = loadCart();
     const key = String(it.id);
     if(cart[key]){
-      cart[key].qty = Number(cart[key].qty || 1) + qty;
-    }else{
+      cart[key].qty += safeQty;
+    } else {
       cart[key] = {
         id: it.id,
-        name_raw: it.name_raw || "",
-        unit: it.unit || "",
-        price: Number(it.price || 0),
-        supplier_id: it.supplier_id || null,
-        supplier_name: it.supplier_name || "",
-        qty: qty
+        name_raw: it.name_raw,
+        unit: it.unit,
+        price: Number(it.price),
+        supplier_id: it.supplier_id,
+        supplier_name: it.supplier_name,
+        qty: safeQty
       };
     }
     saveCart(cart);
-    toast("Добавлено в корзину", `${it.name_raw}`);
+    toast("Добавлено", it.name_raw);
   }
 
-  function render(items, q){
+  function render(items){
     const tbody = $("rows");
     tbody.innerHTML = "";
-
-    $("countLine").textContent = q ? `Найдено: ${items.length}` : `Показано: ${items.length}`;
-    $("statusLine").textContent = q ? "Готово." : "Список последних позиций.";
-
     if(!items.length){
-      tbody.innerHTML = `<tr><td colspan="5" class="sub">Ничего не найдено</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="6" style="text-align:center; padding:40px; color:var(--text-muted)">Ничего не найдено</td></tr>`;
+      $("resultsMeta").textContent = "";
       return;
     }
-
-    for(const it of items){
+    $("resultsMeta").textContent = `Найдено позиций: ${items.length}`;
+    items.forEach(it => {
       const tr = document.createElement("tr");
       tr.innerHTML = `
-        <td data-label="Товар"><b>${esc(it.name_raw)}</b></td>
-        <td data-label="Поставщик">${esc(it.supplier_name || "")}</td>
+        <td data-label="Наименование"><div style="font-weight:600; font-size:15px">${esc(it.name_raw)}</div></td>
+        <td data-label="Поставщик"><span class="badge">${esc(it.supplier_name)}</span></td>
         <td data-label="Ед.">${esc(it.unit || "—")}</td>
-        <td data-label="Цена, руб"><b>${esc(fmtPrice(it.price))}</b></td>
-        <td data-label="В корзину">
-          <div class="tdActions">
-            <input class="qty" id="qty_${it.id}" type="number" min="1" value="1"/>
-            <button class="btn primary" type="button" data-add="${it.id}">Добавить</button>
+        <td data-label="Цена" class="accent">${fmtPrice(it.price)} ₽</td>
+        <td data-label="Количество">
+          <div style="display:flex; align-items:center; gap:8px; width:100%;">
+            <input type="number" min="1" step="1" value="1" class="input qtyInput" style="height:38px; padding:0 10px; width:110px;" aria-label="Количество" />
+            <div style="font-size:12px; color:#94a3b8;">${esc(it.unit || "шт.")}</div>
           </div>
+        </td>
+        <td data-label="Действие">
+          <button class="btn primary" style="height:38px; font-size:13px; width:100%;" data-add="${it.id}">В корзину</button>
         </td>
       `;
       tbody.appendChild(tr);
-
-      tr.querySelector(`[data-add="${it.id}"]`).addEventListener("click", ()=> addToCartFromRow(it));
-    }
+      const qtyInput = tr.querySelector(".qtyInput");
+      tr.querySelector(`[data-add="${it.id}"]`).addEventListener("click", () => {
+        addToCartFromRow(it, qtyInput?.value || 1);
+      });
+    });
   }
 
   async function doSearch(){
     const q = $("q").value.trim();
-    const limit = $("limit").value || "60";
-    const supplier_id = $("supplier").value || "";
-    const sort = $("sort").value || "rank";
-
-    $("statusLine").textContent = q ? "Ищем…" : "Показываю…";
-
     const url = new URL("/search", window.location.origin);
-    if(q) url.searchParams.set("q", q);
-    url.searchParams.set("limit", limit);
-    if(supplier_id) url.searchParams.set("supplier_id", supplier_id);
-    if(sort) url.searchParams.set("sort", sort);
+    url.searchParams.set("q", q);
+    url.searchParams.set("limit", $("limit").value);
+    if($("supplier").value) url.searchParams.set("supplier_id", $("supplier").value);
+    url.searchParams.set("sort", $("sort").value);
 
     const r = await fetch(url);
     const j = await r.json();
-    render(j.items || [], q);
+    render(j.items || []);
   }
 
   $("btnSearch").addEventListener("click", doSearch);
-  $("btnClear").addEventListener("click", ()=>{
-    $("q").value = "";
-    $("supplier").value = "";
-    $("sort").value = "rank";
-    $("limit").value = "60";
-    doSearch();
-  });
-  $("q").addEventListener("keydown", (e)=>{ if(e.key==="Enter") doSearch(); });
+  $("q").addEventListener("keydown", (e) => e.key === "Enter" && doSearch());
+  $("btnClear").addEventListener("click", () => { $("q").value = ""; doSearch(); });
 
-  (async ()=>{
-    await loadSuppliers();
-    doSearch();
-  })();
+  loadSuppliers();
+  doSearch();
 </script>
 {% endblock %}
