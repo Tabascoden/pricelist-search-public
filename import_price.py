@@ -2,27 +2,25 @@
 # -*- coding: utf-8 -*-
 
 import argparse
-
 import csv
 import os
 import re
 import sys
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from io import BytesIO
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 
 import psycopg2
 from psycopg2.extras import execute_values
-
 import pandas as pd
 
-
-NAME_KEYS = ["наименование", "наименованиетовара", "товар", "описание", "позиция", "product", "item", "название"]
+# Ключевые слова для поиска колонок
+NAME_KEYS = ["наименование", "наименованиетовара", "товар", "описание", "позиция", "product", "item", "название", "номенклатура"]
 CODE_KEYS = ["код", "кодтовара", "артикул", "art", "sku", "код1с", "штрихкод", "баркод"]
 UNIT_KEYS = ["ед", "едизм", "единицаизмерения", "единица", "unit", "едиз", "упак", "уп", "шт", "кг", "л", "литр"]
 PRICE_KEYS = ["цена", "ценабезндс", "ценасндс", "ценаруб", "стоимость", "price", "отпускнаяцена", "сумма", "руб"]
 
-KNOWN_UNITS = {"шт", "штука", "штук", "кг", "г", "гр", "л", "литр", "литров", "уп", "упак", "кор", "коробка"}
+KNOWN_UNITS = {"шт", "штука", "штук", "кг", "г", "гр", "л", "литр", "литров", "уп", "упак", "кор", "коробка", "бут", "бутылка"}
 
 
 def normalize_name(name_raw: str) -> str:
@@ -30,8 +28,7 @@ def normalize_name(name_raw: str) -> str:
         return ""
     text = str(name_raw).lower()
     text = text.replace("ё", "е")
-    text = text.strip()
-    text = re.sub(r"[^a-zа-я0-9\s\.\,\-\/]+", " ", text)
+    text = re.sub(r"[^a-zа-я0-9\s\.\,\%\*\-\/]+", " ", text)
     text = re.sub(r"\s+", " ", text)
     return text.strip()
 
@@ -40,48 +37,76 @@ def detect_category(name_raw: str) -> Optional[str]:
     if not name_raw:
         return None
     lowered = str(name_raw).lower()
-    if re.search(r"консерв|марин|солен|вялен|в рассоле|в собственном соку", lowered):
+    if re.search(r"консерв|марин|солен|вялен|в рассоле|в собственном соку|томатная паста", lowered):
         return "canned"
-    if re.search(r"замороз|frozen", lowered):
+    if re.search(r"замороз|frozen|с/м|свежеморож", lowered):
         return "frozen"
-    # базовый дефолт
+    if re.search(r"овощи|фрукты|зелень|ягоды|салат", lowered):
+        return "fresh"
     return "fresh"
 
 
-def compute_unit_metrics(name_raw: str, unit_raw: Optional[str], price: Optional[Decimal]):
+def compute_unit_metrics(name_raw: str, unit_raw: Optional[str], price: Optional[Decimal]) -> Tuple[Optional[str], Optional[Decimal], Optional[Decimal]]:
     unit_norm = (unit_raw or "").strip().lower().replace(".", "")
-    name_lower = str(name_raw or "").lower()
+    name_lower = str(name_raw or "").lower().replace(",", ".")
+    
     price_per_unit = None
     base_unit = None
     base_qty = None
 
-    if unit_norm in {"кг", "kg"}:
+    if unit_norm in {"кг", "kg", "килограмм"}:
         base_unit = "kg"
         base_qty = Decimal("1")
-    elif unit_norm in {"л", "л", "литр", "литров", "l"}:
+    elif unit_norm in {"л", "литр", "l", "литров"}:
         base_unit = "l"
         base_qty = Decimal("1")
-    elif unit_norm in {"шт", "штука", "штук", "уп", "упак", "кор", "коробка"}:
+    
+    if base_qty is None:
         patterns = [
-            (r"(\d+[\,\.]?\d*)\s*(кг)", "kg", Decimal("1")),
-            (r"(\d+[\,\.]?\d*)\s*(г|гр|грам)", "kg", Decimal("0.001")),
-            (r"(\d+[\,\.]?\d*)\s*(л|литр|ml|мл)", "l", Decimal("0.001")),
+            (r"(\d+)\s*[xх\*]\s*(\d+[\.]?\d*)\s*(кг|kg|г|гр|g|грам)", "weight"),
+            (r"(\d+[\.]?\d*)\s*(кг|kg|г|гр|g|грам)", "weight"),
+            (r"(\d+)\s*[xх\*]\s*(\d+[\.]?\d*)\s*(л|l|литр|ml|мл|миллилитр)", "volume"),
+            (r"(\d+[\.]?\d*)\s*(л|l|литр|ml|мл|миллилитр)", "volume"),
         ]
-        for pattern, b_unit, multiplier in patterns:
+
+        for pattern, p_type in patterns:
             m = re.search(pattern, name_lower)
             if m:
                 try:
-                    val = Decimal(m.group(1).replace(",", "."))
-                    base_unit = b_unit
-                    base_qty = (val * multiplier).quantize(Decimal("0.000001"))
+                    if len(m.groups()) == 3:
+                        multiplier = Decimal(m.group(1))
+                        val = Decimal(m.group(2))
+                        unit_str = m.group(3)
+                    else:
+                        multiplier = Decimal("1")
+                        val = Decimal(m.group(1))
+                        unit_str = m.group(2)
+
+                    if p_type == "weight":
+                        base_unit = "kg"
+                        if unit_str in {"г", "гр", "g", "грам"}:
+                            base_qty = (multiplier * val * Decimal("0.001"))
+                        else:
+                            base_qty = (multiplier * val)
+                    else:
+                        base_unit = "l"
+                        if unit_str in {"ml", "мл", "миллилитр"}:
+                            base_qty = (multiplier * val * Decimal("0.001"))
+                        else:
+                            base_qty = (multiplier * val)
                     break
                 except Exception:
                     continue
 
-    if base_qty and price:
+    if base_qty is None:
+        if unit_norm in {"шт", "штука", "штук", "уп", "упак", "кор", "коробка"}:
+            base_unit = "pcs"
+            base_qty = Decimal("1")
+
+    if base_qty and price and base_qty > 0:
         try:
-            if base_qty > 0:
-                price_per_unit = (price / base_qty).quantize(Decimal("0.0001"))
+            price_per_unit = (price / base_qty).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+            base_qty = base_qty.quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
         except Exception:
             price_per_unit = None
 
@@ -117,12 +142,6 @@ def ensure_schema_compare(conn):
               code text UNIQUE,
               parent_id int REFERENCES categories(id)
             );
-
-            CREATE TABLE IF NOT EXISTS tender_projects (
-              id serial PRIMARY KEY,
-              title text,
-              created_at timestamptz DEFAULT now()
-            );
             """
         )
         cur.execute("ALTER TABLE supplier_items ADD COLUMN IF NOT EXISTS name_normalized text;")
@@ -131,17 +150,6 @@ def ensure_schema_compare(conn):
         cur.execute("ALTER TABLE supplier_items ADD COLUMN IF NOT EXISTS price_per_unit numeric(12,4);")
         cur.execute("ALTER TABLE supplier_items ADD COLUMN IF NOT EXISTS category_id int REFERENCES categories(id);")
         cur.execute("ALTER TABLE supplier_items ADD COLUMN IF NOT EXISTS category_path text;")
-        cur.execute(
-            """
-            INSERT INTO categories(name, code)
-            SELECT * FROM (VALUES
-                ('Свежие продукты', 'fresh'),
-                ('Консервы/маринады', 'canned'),
-                ('Заморозка', 'frozen')
-            ) AS s(name, code)
-            WHERE NOT EXISTS (SELECT 1 FROM categories WHERE code = s.code);
-            """
-        )
     conn.commit()
 
 
@@ -169,13 +177,11 @@ def guess_encoding(path: str) -> str:
 def parse_price(value) -> Optional[Decimal]:
     if value is None:
         return None
-    v = str(value).strip()
+    v = str(value).strip().lower()
     if not v:
         return None
-    v = v.replace(" ", "")
-    v = v.replace("руб", "").replace("р.", "").replace("р", "")
+    v = re.sub(r"[^0-9\.\,]", "", v.replace(" ", ""))
     v = v.replace(",", ".")
-    v = re.sub(r"[^0-9\.]", "", v)
     if not v:
         return None
     try:
@@ -207,15 +213,8 @@ def match_header_field(field_keys, taken, norm_headers):
         if i in taken or not h:
             continue
         for key in field_keys:
-            key = key.strip()
-            if not key:
-                continue
-            if len(key) <= 3:
-                if h == key or h.startswith(key):
-                    return i
-            else:
-                if h == key or key in h:
-                    return i
+            if key in h:
+                return i
     return None
 
 
@@ -225,498 +224,137 @@ def detect_columns_by_header(headers) -> Dict[str, Optional[int]]:
         return result
     norm_headers = [normalize_header(h) for h in headers]
     taken = set()
-
-    idx = match_header_field(NAME_KEYS, taken, norm_headers)
-    if idx is not None:
-        result["name"] = idx
-        taken.add(idx)
-
-    idx = match_header_field(PRICE_KEYS, taken, norm_headers)
-    if idx is not None:
-        result["price"] = idx
-        taken.add(idx)
-
-    idx = match_header_field(CODE_KEYS, taken, norm_headers)
-    if idx is not None:
-        result["code"] = idx
-        taken.add(idx)
-
-    idx = match_header_field(UNIT_KEYS, taken, norm_headers)
-    if idx is not None:
-        result["unit"] = idx
-        taken.add(idx)
-
+    for field, keys in [("name", NAME_KEYS), ("price", PRICE_KEYS), ("code", CODE_KEYS), ("unit", UNIT_KEYS)]:
+        idx = match_header_field(keys, taken, norm_headers)
+        if idx is not None:
+            result[field] = idx
+            taken.add(idx)
     return result
 
 
 def detect_columns_by_sample(rows, col_map) -> Dict[str, Optional[int]]:
     if not rows:
         return col_map
-
     col_count = max(len(r) for r in rows)
-
     if col_map.get("name") is None:
-        avg_len = []
         for idx in range(col_count):
-            vals = [str(r[idx]) for r in rows if idx < len(r) and r[idx] not in (None, "")]
-            if not vals:
-                avg_len.append((idx, 0))
-            else:
-                avg = sum(len(v.strip()) for v in vals) / len(vals)
-                avg_len.append((idx, avg))
-        avg_len.sort(key=lambda x: x[1], reverse=True)
-        if avg_len and avg_len[0][1] > 3:
-            col_map["name"] = avg_len[0][0]
-
+            vals = [str(r[idx]) for r in rows if idx < len(r) and r[idx]]
+            if vals and sum(len(v) for v in vals)/len(vals) > 10:
+                col_map["name"] = idx
+                break
     if col_map.get("price") is None:
-        candidates = []
         for idx in range(col_count):
             vals = [str(r[idx]) for r in rows if idx < len(r)]
-            if not vals:
-                continue
-            num_cnt = sum(1 for v in vals if is_number_like(v))
-            ratio = num_cnt / len(vals)
-            if ratio >= 0.5:
-                nums = [float(str(v).replace(",", ".").replace(" ", "")) for v in vals if is_number_like(v)]
-                avg_val = sum(nums) / len(nums) if nums else 0
-                candidates.append((idx, ratio, avg_val))
-        if candidates:
-            candidates.sort(key=lambda x: (x[1], x[2]), reverse=True)
-            col_map["price"] = candidates[0][0]
-
-    if col_map.get("unit") is None:
-        best_idx = None
-        best_score = 0
-        for idx in range(col_count):
-            vals = [str(r[idx]) for r in rows if idx < len(r)]
-            if not vals:
-                continue
-            score = sum(1 for v in vals if is_unit_like(v))
-            if score > best_score and score > 0:
-                best_score = score
-                best_idx = idx
-        if best_idx is not None:
-            col_map["unit"] = best_idx
-
-    if col_map.get("code") is None:
-        best_idx = None
-        best_score = 0
-        for idx in range(col_count):
-            vals = [str(r[idx]) for r in rows if idx < len(r)]
-            if not vals:
-                continue
-            score = 0
-            for v in vals:
-                v = v.strip()
-                if 2 <= len(v) <= 24 and re.match(r"^[0-9A-Za-zА-Яа-я\-_/\.]+$", v):
-                    score += 1
-            if score > best_score:
-                best_score = score
-                best_idx = idx
-        if best_idx is not None:
-            col_map["code"] = best_idx
-
+            if vals and sum(1 for v in vals if is_number_like(v))/len(vals) > 0.5:
+                col_map["price"] = idx
+                break
     return col_map
 
 
 def _clean_row(row) -> List[str]:
-    vals = [("" if v is None else str(v)) for v in row]
-    while vals and vals[-1] == "":
-        vals.pop()
-    return vals
+    return [("" if v is None else str(v)) for v in row]
 
 
 def load_from_csv(file_path) -> Tuple[Optional[List[str]], List[List[str]]]:
     encoding = guess_encoding(file_path)
     with open(file_path, "r", encoding=encoding, newline="") as f:
-        sample = f.read(4096)
-        f.seek(0)
-        try:
-            dialect = csv.Sniffer().sniff(sample, delimiters=";,|\t")
-        except csv.Error:
-            dialect = csv.excel
-            dialect.delimiter = ";"
-
-        try:
-            has_header = csv.Sniffer().has_header(sample)
-        except csv.Error:
-            has_header = True
-
-        reader = csv.reader(f, dialect)
-        rows_raw = [list(row) for row in reader]
-
-    rows_clean = []
-    for row in rows_raw:
-        row = _clean_row(row)
-        if any(str(c).strip() for c in row):
-            rows_clean.append(row)
-
-    if not rows_clean:
+        reader = csv.reader(f, delimiter=";")
+        rows = [list(row) for row in reader]
+    if not rows:
         return None, []
-
-    if has_header:
-        headers = rows_clean[0]
-        data_rows = rows_clean[1:]
-    else:
-        headers = None
-        data_rows = rows_clean
-
-    return headers, data_rows
-
-
-def _detect_header(first_row: List[str]) -> bool:
-    norm_first = [normalize_header(c) for c in first_row]
-    tokens = NAME_KEYS + PRICE_KEYS + CODE_KEYS + UNIT_KEYS
-    return any(any(key in h for key in tokens) for h in norm_first)
+    return rows[0], rows[1:]
 
 
 def _find_header_row(rows: List[List[str]], scan_limit: int = 80):
-    """
-    Ищем строку-шапку в первых scan_limit строках.
-    Шапка должна содержать хотя бы 'наименование' и 'цена'.
-    Возвращаем: (headers, data_rows, header_index)
-    """
-
-    def has_any(norm_row, keys):
-        for cell in norm_row:
-            if not cell:
-                continue
-            for k in keys:
-                if k in cell:
-                    return True
-        return False
-
-    best_idx = None
     for i, row in enumerate(rows[:scan_limit]):
         norm = [normalize_header(c) for c in row]
-        has_name = has_any(norm, NAME_KEYS)
-        has_price = has_any(norm, PRICE_KEYS)
-        if has_name and has_price:
-            best_idx = i
-            break
-
-    if best_idx is None:
-        return None, rows, None
-
-    return rows[best_idx], rows[best_idx + 1 :], best_idx
-
-
-def _excel_engine_for_ext(ext: str) -> str:
-    ext = ext.lower()
-    if ext in (".xlsx", ".xlsm"):
-        return "openpyxl"
-    if ext == ".xls":
-        return "xlrd"
-    raise ValueError(f"Unsupported Excel extension: {ext}")
+        if any(k in norm for k in NAME_KEYS) and any(k in norm for k in PRICE_KEYS):
+            return row, rows[i+1:], i
+    return None, rows, None
 
 
 def list_excel_sheets(path: str) -> List[str]:
-    ext = os.path.splitext(path)[1].lower()
-    if ext not in (".xlsx", ".xlsm", ".xls"):
-        return []
-
-    engine = _excel_engine_for_ext(ext)
-    with open(path, "rb") as f:
-        data = BytesIO(f.read())
-
-    try:
-        with pd.ExcelFile(data, engine=engine) as xls:
-            return list(xls.sheet_names)
-    except Exception as e:
-        raise RuntimeError(f"Не удалось прочитать листы из файла {path}: {e}") from e
+    with pd.ExcelFile(path) as xls:
+        return list(xls.sheet_names)
 
 
 def load_excel_rows(file_path: str, ext: str, target_sheets: Optional[List[str]] = None):
-    ext = ext.lower()
-    if ext not in (".xlsx", ".xlsm", ".xls"):
-        raise ValueError(f"Unsupported Excel extension: {ext}")
-
-    engine = _excel_engine_for_ext(ext)
-
-    with open(file_path, "rb") as f:
-        data_buf = BytesIO(f.read())
-
-    with pd.ExcelFile(data_buf, engine=engine) as xls:
-        if target_sheets:
-            sheets = [s for s in target_sheets if s in xls.sheet_names]
-        else:
-            sheets = list(xls.sheet_names)
-
-        if not sheets:
-            return
-
-        data = pd.read_excel(
-            xls,
-            sheet_name=sheets if len(sheets) != 1 else sheets[0],
-            engine=engine,
-            dtype=object,
-            header=None,   # важно: не выбрасываем первую строку как "header"
-        )
-        if not isinstance(data, dict):
-            data = {sheets[0]: data}
-
-    for sname, df in data.items():
-        if df is None:
-            yield sname, []
-            continue
-
-        df = df.where(df.notna(), None)
-        rows_raw = df.values.tolist()
-        rows = []
-        for r in rows_raw:
-            row = _clean_row(r)
-            if any(str(v).strip() for v in row):
-                rows.append(row)
-        yield sname, rows
+    with pd.ExcelFile(file_path) as xls:
+        sheets = target_sheets if target_sheets else xls.sheet_names
+        for sname in sheets:
+            df = pd.read_excel(xls, sheet_name=sname, header=None)
+            yield sname, df.where(df.notna(), None).values.tolist()
 
 
-def import_price_file(
-    supplier_id: int,
-    file_path: str,
-    original_filename: Optional[str] = None,
-    sheet_mode: str = "all",
-    sheet_names: Optional[List[str]] = None,
-) -> Dict[str, object]:
-    if not os.path.isfile(file_path):
-        raise FileNotFoundError(f"Файл не найден: {file_path}")
-
-    ext = os.path.splitext(file_path)[1].lower()
-    if original_filename is None:
-        original_filename = os.path.basename(file_path)
-    if not ext and original_filename:
-        ext = os.path.splitext(original_filename)[1].lower()
-
-    stats: List[Dict[str, object]] = []
-    total_imported = 0
-
+def import_price_file(supplier_id: int, file_path: str, original_filename: Optional[str] = None, sheet_mode: str = "all", sheet_names: Optional[List[str]] = None):
     conn = connect_db()
     try:
         with conn.cursor() as cur:
-            # поставщик должен существовать
-            cur.execute("SELECT 1 FROM suppliers WHERE id=%s;", (supplier_id,))
-            if not cur.fetchone():
-                raise RuntimeError(f"Поставщик id={supplier_id} не найден")
-
             ensure_schema_compare(conn)
-
-            # 1 поставщик = 1 прайс -> удаляем старое
             cur.execute("DELETE FROM supplier_items WHERE supplier_id=%s;", (supplier_id,))
-            cur.execute("DELETE FROM price_list_files WHERE supplier_id=%s;", (supplier_id,))
-
-            # регистрируем файл
-            cur.execute(
-                """
-                INSERT INTO price_list_files (supplier_id, file_name, status, rows_imported)
-                VALUES (%s, %s, 'importing', 0)
-                RETURNING id;
-                """,
-                (supplier_id, original_filename),
-            )
+            cur.execute("INSERT INTO price_list_files (supplier_id, file_name, status, rows_imported) VALUES (%s, %s, 'importing', 0) RETURNING id;", (supplier_id, original_filename or os.path.basename(file_path)))
             file_id = cur.fetchone()[0]
-            conn.commit()
-
+        
         category_map = fetch_category_map(conn)
+        total_imported = 0
+        ext = os.path.splitext(file_path)[1].lower()
 
-        def insert_batch(batch: List[Tuple]):
+        def process_rows(rows_iter):
             nonlocal total_imported
-            if not batch:
-                return
-            with conn.cursor() as cur2:
-                execute_values(
-                    cur2,
-                    """
-                    INSERT INTO supplier_items
-                      (supplier_id, price_list_file_id, external_code, name_raw, unit, price, currency, is_active,
-                       name_normalized, base_unit, base_qty, price_per_unit, category_id)
-                    VALUES %s
-                    """,
-                    batch,
-                    page_size=1000,
-                )
-            total_imported += len(batch)
-
-        def process_rows(sheet_label: str, headers: Optional[List[str]], rows_iter):
-            imported = 0
-            skipped = 0
-
-            col_map = detect_columns_by_header(headers) if headers else {"name": None, "code": None, "unit": None, "price": None}
-
-            # набираем sample для уточнения
-            sample_rows = []
-            buffer_rows = []
-            for _ in range(60):
-                try:
-                    r = next(rows_iter)
-                    buffer_rows.append(r)
-                    sample_rows.append(r)
-                except StopIteration:
-                    break
-
-            col_map = detect_columns_by_sample(sample_rows[:50], col_map)
+            rows = list(rows_iter)
+            headers, data_rows, _ = _find_header_row(rows)
+            col_map = detect_columns_by_header(headers)
+            col_map = detect_columns_by_sample(data_rows[:50], col_map)
+            
             if col_map["name"] is None or col_map["price"] is None:
-                stats.append(
-                    {
-                        "sheet": sheet_label,
-                        "imported": 0,
-                        "skipped": 0,
-                        "reason": "columns_not_detected",
-                        "map": col_map,
-                    }
-                )
                 return
 
-            batch: List[Tuple] = []
-
-            def row_to_tuple(row: List[str]) -> Optional[Tuple]:
-                def get(idx):
-                    if idx is None or idx >= len(row):
-                        return None
-                    v = row[idx]
-                    v = "" if v is None else str(v).strip()
-                    return v or None
-
-                name_raw = get(col_map["name"])
-                if not name_raw:
-                    return None
-
-                price_val = parse_price(get(col_map["price"]))
-                if price_val is None:
-                    return None
-
-                code_raw = get(col_map["code"])
-                unit_raw = get(col_map["unit"])
-
+            batch = []
+            for row in data_rows:
+                if col_map["name"] >= len(row): continue
+                name_raw = str(row[col_map["name"]]).strip() if row[col_map["name"]] else None
+                if not name_raw: continue
+                
+                if col_map["price"] >= len(row): continue
+                price_val = parse_price(row[col_map["price"]])
+                if price_val is None: continue
+                
+                unit_raw = str(row[col_map["unit"]]).strip() if col_map["unit"] is not None and col_map["unit"] < len(row) and row[col_map["unit"]] else None
+                code_raw = str(row[col_map["code"]]).strip() if col_map["code"] is not None and col_map["code"] < len(row) and row[col_map["code"]] else None
+                
                 name_norm = normalize_name(name_raw)
                 base_unit, base_qty, price_per_unit = compute_unit_metrics(name_raw, unit_raw, price_val)
-                category_code = detect_category(name_raw)
-                category_id = category_map.get(category_code) if category_code else None
+                cat_id = category_map.get(detect_category(name_raw))
 
-                return (
-                    supplier_id,
-                    file_id,
-                    code_raw,
-                    name_raw,
-                    unit_raw,
-                    price_val,
-                    "RUB",
-                    True,
-                    name_norm,
-                    base_unit,
-                    base_qty,
-                    price_per_unit,
-                    category_id,
-                )
-
-            # сначала отрабатываем буфер
-            for r in buffer_rows:
-                tpl = row_to_tuple(r)
-                if tpl is None:
-                    skipped += 1
-                    continue
-                batch.append(tpl)
-                imported += 1
+                batch.append((supplier_id, file_id, code_raw, name_raw, unit_raw, price_val, "RUB", True, name_norm, base_unit, base_qty, price_per_unit, cat_id))
                 if len(batch) >= 1000:
-                    insert_batch(batch)
-                    conn.commit()
-                    batch.clear()
-
-            # затем поток
-            for r in rows_iter:
-                tpl = row_to_tuple(r)
-                if tpl is None:
-                    skipped += 1
-                    continue
-                batch.append(tpl)
-                imported += 1
-                if len(batch) >= 1000:
-                    insert_batch(batch)
-                    conn.commit()
-                    batch.clear()
-
+                    with conn.cursor() as cur:
+                        execute_values(cur, "INSERT INTO supplier_items (supplier_id, price_list_file_id, external_code, name_raw, unit, price, currency, is_active, name_normalized, base_unit, base_qty, price_per_unit, category_id) VALUES %s", batch)
+                    total_imported += len(batch)
+                    batch = []
+            
             if batch:
-                insert_batch(batch)
-                conn.commit()
+                with conn.cursor() as cur:
+                    execute_values(cur, "INSERT INTO supplier_items (supplier_id, price_list_file_id, external_code, name_raw, unit, price, currency, is_active, name_normalized, base_unit, base_qty, price_per_unit, category_id) VALUES %s", batch)
+                total_imported += len(batch)
 
-            stats.append({"sheet": sheet_label, "imported": imported, "skipped": skipped, "reason": "ok", "map": col_map})
-
-        # --- Excel ---
-        if ext in (".xlsx", ".xlsm", ".xls"):
-            available = list_excel_sheets(file_path)
-
-            if sheet_mode == "selected" and sheet_names:
-                target = [s for s in sheet_names if s in available]
-            else:
-                target = available  # auto = все листы
-
-            for sname, rows in load_excel_rows(file_path, ext, target):
-                if not rows:
-                    stats.append({"sheet": sname, "imported": 0, "skipped": 0, "reason": "empty"})
-                    continue
-
-                headers, data_rows, header_idx = _find_header_row(rows)
-                process_rows(sname, headers, iter(data_rows))
-
-        # --- CSV ---
+        if ext in (".xlsx", ".xls"):
+            for sname, rows in load_excel_rows(file_path, ext, sheet_names if sheet_mode=="selected" else None):
+                process_rows(rows)
         else:
-            headers, rows = load_from_csv(file_path)
-            if not rows:
-                stats.append({"sheet": "CSV", "imported": 0, "skipped": 0, "reason": "empty"})
-            else:
-                def rows_iter():
-                    for r in rows:
-                        yield r
+            _, rows = load_from_csv(file_path)
+            process_rows(rows)
 
-                process_rows("CSV", headers, iter(rows_iter()))
-
-        # финализация file record
         with conn.cursor() as cur:
-            cur.execute(
-                """
-                UPDATE price_list_files
-                   SET status='imported',
-                       rows_imported=%s,
-                       error_message=NULL
-                 WHERE id=%s
-                """,
-                (total_imported, file_id),
-            )
-            conn.commit()
-
-        return {"imported": total_imported, "file_id": file_id, "stats": stats}
-
-    except Exception as e:
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "UPDATE price_list_files SET status='error', error_message=%s WHERE supplier_id=%s ORDER BY id DESC LIMIT 1",
-                    (str(e), supplier_id),
-                )
-                conn.commit()
-        except Exception:
-            pass
-        raise
+            cur.execute("UPDATE price_list_files SET status='imported', rows_imported=%s WHERE id=%s", (total_imported, file_id))
+        conn.commit()
+        return {"imported": total_imported}
     finally:
         conn.close()
 
-
-def main():
-    p = argparse.ArgumentParser(description="Импорт прайса (CSV/XLSX) в supplier_items (bulk insert)")
-    p.add_argument("--supplier", type=int, required=True, help="ID поставщика из suppliers")
-    p.add_argument("--file", required=True, help="Путь к файлу прайса")
-    p.add_argument("--sheet_mode", default="all", choices=["all", "selected"])
-    p.add_argument("--sheets", default="", help="Список листов через запятую (если sheet_mode=selected)")
-    args = p.parse_args()
-
-    sheet_names = [s.strip() for s in (args.sheets or "").split(",") if s.strip()] or None
-    res = import_price_file(
-        supplier_id=args.supplier,
-        file_path=args.file,
-        original_filename=os.path.basename(args.file),
-        sheet_mode=args.sheet_mode,
-        sheet_names=sheet_names,
-    )
-    print(res)
-
-
 if __name__ == "__main__":
-    main()
+    p = argparse.ArgumentParser()
+    p.add_argument("--supplier", type=int, required=True)
+    p.add_argument("--file", required=True)
+    args = p.parse_args()
+    print(import_price_file(args.supplier, args.file))
