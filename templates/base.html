@@ -68,15 +68,16 @@
     }
     .logo{
       width:42px; height:42px; border-radius:14px;
-      background:linear-gradient(145deg, var(--primary), var(--primary-strong));
+      /* background:linear-gradient(145deg, var(--primary), var(--primary-strong)); */
       display:flex; align-items:center; justify-content:center;
-      color:#fff; font-weight:900; letter-spacing:0.5px;
-      box-shadow:0 14px 28px rgba(108,142,255,.35);
+      /* color:#fff; font-weight:900; letter-spacing:0.5px;
+      box-shadow:0 14px 28px rgba(108,142,255,.35); */
       flex: 0 0 auto;
       position:relative;
       overflow:hidden;
       isolation:isolate;
     }
+    /*
     .logo::after{
       content:"";
       position:absolute; inset:0;
@@ -84,6 +85,7 @@
       mix-blend-mode:screen;
       pointer-events:none;
     }
+    */
     .brandTitle{line-height:1.1}
     .brandTitle b{display:block; font-size:14px; letter-spacing:0.3px; text-transform:uppercase;}
     .brandTitle small{display:block; color:var(--muted); font-size:12px; letter-spacing:0.1px;}
@@ -324,7 +326,9 @@
   <div class="header">
     <div class="headerInner">
       <div class="brand">
-        <div class="logo">A</div>
+        <div class="logo">
+           <img src="{{ url_for('static', filename='logo.svg') }}" alt="SmartProc" style="width:32px; height:32px;">
+        </div>
         <div class="brandTitle">
           <b>SMARTPROC</b>
           <small>Поиск / Заявка</small>
