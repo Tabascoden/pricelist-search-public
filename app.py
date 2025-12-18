@@ -8,7 +8,7 @@ import os
 import re
 import shutil
 from datetime import datetime
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -1275,6 +1275,15 @@ def create_app() -> Flask:
 
         headers = ["Поставщик", "Товар", "Кол-во", "Ед.", "Цена, руб", "Сумма, руб"]
 
+        def round_money(v: float) -> int:
+            try:
+                return int(Decimal(v).quantize(0, rounding=ROUND_HALF_UP))
+            except Exception:
+                try:
+                    return int(round(v))
+                except Exception:
+                    return 0
+
         if Workbook is None:
             # CSV fallback
             import csv
@@ -1284,9 +1293,19 @@ def create_app() -> Flask:
             wrapper = io.TextIOWrapper(out, encoding="utf-8", newline="")
             w = csv.writer(wrapper, delimiter=";")
             w.writerow(headers)
+
             for it in norm:
-                s = round(it["price"] * it["qty"], 2)
-                w.writerow([it["supplier_name"], it["name_raw"], it["qty"], it["unit"], it["price"], s])
+                s = round_money(it["price"] * it["qty"])
+                w.writerow(
+                    [
+                        it["supplier_name"],
+                        it["name_raw"],
+                        it["qty"],
+                        it["unit"],
+                        round_money(it["price"]),
+                        s,
+                    ]
+                )
             wrapper.flush()
             out.seek(0)
             return send_file(out, mimetype="text/csv; charset=utf-8", as_attachment=True, download_name="zakaz.csv")
@@ -1302,8 +1321,17 @@ def create_app() -> Flask:
         ws.freeze_panes = "A2"
 
         for it in norm:
-            s = round(it["price"] * it["qty"], 2)
-            ws.append([it["supplier_name"], it["name_raw"], it["qty"], it["unit"], it["price"], s])
+            s = round_money(it["price"] * it["qty"])
+            ws.append(
+                [
+                    it["supplier_name"],
+                    it["name_raw"],
+                    it["qty"],
+                    it["unit"],
+                    round_money(it["price"]),
+                    s,
+                ]
+            )
 
         widths = [22, 60, 10, 10, 14, 14]
         for i, w in enumerate(widths, start=1):
