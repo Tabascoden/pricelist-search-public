@@ -44,7 +44,9 @@ function fmtScore(s) {
 function fmtPrice(p) {
   if (p === '-' || p === null) return '-';
   const n = Number(p);
-  if (Number.isFinite(n)) return n.toFixed(2);
+  if (Number.isFinite(n)) {
+    return Math.round(n).toLocaleString('ru-RU', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+  }
   return String(p);
 }
 
