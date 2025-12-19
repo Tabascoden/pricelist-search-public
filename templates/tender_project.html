@@ -1,146 +1,189 @@
 {% extends 'base.html' %}
 {% block content %}
+
 <div class="card" id="tender-project" data-project-id="{{ project_id }}">
   <div class="cardHeader tender-flex">
-    <div>
-      <h1>Тендер #{{ project_id }}</h1>
-      <div class="sub">
-        Демо-визуализация: эталон и альтернативы. Пока без БД/SQL.
+    <div style="display:flex; flex-direction:column; gap:8px;">
+      <div class="tender-flex" style="gap:10px;">
+        <a class="btn" href="/tenders">← К списку тендеров</a>
+        <h1 style="margin:0;">Тендер #{{ project_id }}</h1>
       </div>
+      <div class="sub">Демо-визуализация: эталон + альтернативы + сравнение поставщиков. Пока без БД/SQL.</div>
     </div>
 
-    <div class="tender-flex tender-actions-top">
-      <div class="tender-upload">
-        <input type="file" id="tender-upload" accept=".xlsx" disabled>
-        <button class="btn" id="tender-upload-btn" disabled title="В демо не загружаем файл">
-          Загрузить XLSX
-        </button>
-      </div>
-
-      <button class="btn" id="tender-autopick" title="В демо просто проставит эталоны для наглядности">
-        Автоподбор
-      </button>
-
-      <button class="btn primary" id="tender-export" title="В демо экспорт не включён">
-        Экспорт
-      </button>
+    <div class="tender-flex" style="margin-left:auto;">
+      <input type="file" id="tender-upload" accept=".xlsx" style="min-width:220px;">
+      <button class="btn" id="tender-upload-btn" disabled>Загрузить XLSX</button>
+      <button class="btn" id="tender-autopick">Автоподбор</button>
+      <button class="btn primary" id="tender-export">Экспорт</button>
     </div>
   </div>
 
-  <div class="tender-legend">
-    <div class="pill">Эталон</div>
-    <div class="muted">
-      Альтернативы сначала ищем по строке закупки, а после выбора эталона — по эталону.
-      “Поставщик” везде отдельной колонкой.
-    </div>
+  <div class="tender-hint">
+    <b>Как работает логика:</b>
+    <ol>
+      <li>Открываем «Варианты» у позиции — сначала кандидаты ищутся <b>по строке закупки</b>.</li>
+      <li>Выбираем «Сделать эталоном» — после этого поиск альтернатив можно вести <b>по эталону</b> (а не по строке закупки).</li>
+      <li>«Добавить как альтернативу» — это кандидат/замена (возможно другой поставщик), сохраняется к позиции как альтернатива.</li>
+      <li>В таблице позиций есть колонка <b>«Другие поставщики»</b> — быстрый взгляд на цены разных поставщиков.</li>
+    </ol>
+  </div>
+
+  <div class="tabs">
+    <button class="tab active" type="button" data-tab="positions">Позиции</button>
+    <button class="tab" type="button" data-tab="about">Подсказка</button>
   </div>
 
   <div id="tender-items" class="tender-table-wrap"></div>
+
+  <div id="tender-about" class="tender-about hidden">
+    <div class="sub">
+      Тут можно будет позже добавить статистику: сколько позиций закрыто эталоном, сколько альтернатив, и т.д.
+      Сейчас — только визуал.
+    </div>
+  </div>
 </div>
 
-<!-- Modal: Supplier variants -->
-<div class="tender-modal hidden" id="tender-modal" aria-hidden="true">
-  <div class="tender-modal-body" role="dialog" aria-modal="true">
+<!-- MODAL: supplier options -->
+<div class="tender-modal hidden" id="tender-modal">
+  <div class="tender-modal-body">
     <div class="tender-modal-header">
       <div>
-        <h3 id="tender-modal-title">Варианты поставщиков</h3>
-        <div class="sub" id="tender-modal-subtitle"></div>
+        <h3 id="tender-modal-title" style="margin:0;">Варианты поставщиков</h3>
+        <div class="sub" id="tender-modal-subtitle">Позиция: …</div>
       </div>
       <button class="btn" id="tender-modal-close">Закрыть</button>
     </div>
 
-    <!-- Search controls -->
-    <div class="tender-controls">
-      <div class="tender-controls-row">
-        <div class="tender-field">
-          <div class="tender-label">Ручной поиск</div>
-          <input class="input" id="tender-search-input" placeholder="Например: помидоры сливовидные 10кг">
-          <div class="muted">Если заполнено — ищем по этой строке, независимо от “основы поиска”.</div>
-        </div>
+    <div class="tender-modal-grid">
+      <div class="tender-box">
+        <div class="tender-box-title">Ручной поиск</div>
+        <input id="tender-manual-q" class="input" placeholder="Например: помидоры сливовидные">
+        <div class="sub">Если заполнено — ищем по этой строке, независимо от «основы поиска».</div>
+      </div>
 
-        <div class="tender-field">
-          <div class="tender-label">Основа поиска</div>
-          <select class="input" id="tender-search-basis">
-            <option value="row">По строке закупки</option>
-            <option value="baseline">По эталону (если выбран)</option>
-          </select>
-          <div class="muted" id="tender-basis-hint"></div>
-        </div>
+      <div class="tender-box">
+        <div class="tender-box-title">Основа поиска</div>
+        <select id="tender-search-basis" class="input">
+          <option value="purchase">По строке закупки</option>
+          <option value="benchmark">По эталону</option>
+        </select>
+        <div class="sub" id="tender-basis-hint">Ищем по строке закупки (первичный подбор альтернатив).</div>
+      </div>
 
-        <div class="tender-controls-actions">
-          <button class="btn primary" id="tender-search-btn">Найти</button>
-          <button class="btn" id="tender-search-reset">Сброс</button>
-        </div>
+      <div class="tender-box tender-box-actions">
+        <button class="btn primary" id="tender-search-btn">Найти</button>
+        <button class="btn" id="tender-reset-btn">Сброс</button>
       </div>
     </div>
 
-    <!-- Current baseline -->
     <div class="tender-section">
-      <div class="tender-section-title">
-        Текущий эталон
-        <span class="pill" id="tender-baseline-pill" style="display:none;">Эталон выбран</span>
+      <div class="tender-section-title">Текущий эталон</div>
+      <div class="tender-benchmark" id="tender-benchmark">
+        <span class="sub">Эталон ещё не выбран. Найдите кандидатов и нажмите «Сделать эталоном».</span>
       </div>
-      <div id="tender-baseline-box" class="tender-box"></div>
     </div>
 
-    <!-- Candidates -->
     <div class="tender-section">
       <div class="tender-section-title">
         Результаты поиска / кандидаты
-        <span class="muted" id="tender-search-mode"></span>
+        <span class="sub" id="tender-search-mode">— режим: поиск по строке закупки</span>
       </div>
-      <div id="tender-candidates" class="tender-table-wrap"></div>
+
+      <div class="sub" style="margin:6px 0 10px;">
+        Сортировка: кликните по любому заголовку столбца. Поставщик — всегда отдельной колонкой.
+      </div>
+
+      <div class="tableWrap" id="tender-modal-table-wrap"></div>
     </div>
 
-    <!-- Alternatives -->
     <div class="tender-section">
-      <div class="tender-section-title">
-        Альтернативы (авто)
-        <span class="muted" id="tender-alts-mode"></span>
-      </div>
-      <div id="tender-alternatives" class="tender-table-wrap"></div>
+      <div class="tender-section-title">Альтернативы (выбранные)</div>
+      <div id="tender-alternatives" class="sub">Пока пусто.</div>
     </div>
   </div>
 </div>
 
 <style>
   .tender-flex { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
-  .tender-actions-top { margin-left:auto; }
-  .tender-upload { display:flex; gap:8px; align-items:center; }
+  .tender-table-wrap { width: 100%; margin-top: 14px; }
+  .tender-hint { margin: 12px 0 6px; padding: 12px; border:1px solid var(--border); border-radius: 14px; background: #fff; }
+  .tender-hint ol { margin: 8px 0 0 18px; }
+  .tender-hint li { margin: 6px 0; }
 
-  .tender-legend { display:flex; align-items:center; gap:12px; padding:12px; border:1px solid var(--border); border-radius:12px; background:#fff; margin-top:12px; }
-  .pill { display:inline-flex; align-items:center; gap:6px; padding:4px 10px; border-radius:999px; background:#eef2ff; color:#312e81; font-size:12px; font-weight:700; }
-  .muted { color:#64748b; font-size:12px; }
+  .tabs { display:flex; gap:8px; margin: 12px 0 6px; }
+  .tab { border:1px solid var(--border); background:#fff; border-radius: 999px; padding: 7px 12px; cursor:pointer; font-size: 13px; }
+  .tab.active { border-color: rgba(99,102,241,.6); box-shadow: 0 0 0 3px rgba(99,102,241,.12); }
+  .hidden { display:none; }
 
-  .tender-table-wrap { width:100%; margin-top:12px; }
-  .tender-table { width:100%; border-collapse:collapse; }
-  .tender-table th, .tender-table td { border-bottom:1px solid var(--border); padding:10px 12px; text-align:left; vertical-align:top; }
-  .tender-table th { background:#f8fafc; font-size:12px; letter-spacing:.02em; text-transform:uppercase; color:#475569; }
-  .tender-row-actions { display:flex; gap:8px; flex-wrap:wrap; }
-  .tag { display:inline-flex; align-items:center; padding:4px 10px; border-radius:999px; background:#ecfeff; color:#155e75; font-size:12px; font-weight:700; }
+  /* main table */
+  .tender-grid-head, .tender-grid-row {
+    display:grid;
+    grid-template-columns: 50px 2.2fr 110px 70px 1.3fr 1.6fr 110px 90px 1.8fr 120px;
+    gap: 10px;
+    align-items: center;
+    padding: 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  .tender-grid-head { font-weight: 800; font-size: 12px; text-transform: uppercase; background: #f8fafc; color:#475569; border-top-left-radius: 12px; border-top-right-radius: 12px; }
+  .tender-grid-row:nth-child(even) { background: #fbfcff; }
+  .tender-cell-muted { color:#64748b; font-size: 12px; }
+  .tender-mini { font-size: 12px; }
+  .tender-mini b { font-weight: 800; }
+  .tender-chip {
+    display:inline-flex; align-items:center; gap:6px;
+    border:1px solid var(--border); background:#fff; padding: 3px 8px; border-radius: 999px;
+    margin: 2px 6px 2px 0; white-space: nowrap;
+  }
+  .tender-chip .price { font-weight: 800; }
+  .tender-status { font-size: 12px; }
+  .badge {
+    display:inline-flex; align-items:center; gap:6px; padding: 3px 8px;
+    border-radius: 999px; border:1px solid var(--border); background:#fff; font-size: 12px;
+  }
+  .badge.good { border-color: rgba(34,197,94,.35); background: rgba(34,197,94,.08); }
+  .badge.warn { border-color: rgba(245,158,11,.35); background: rgba(245,158,11,.08); }
 
-  /* Modal */
-  .tender-modal { position:fixed; inset:0; background:rgba(0,0,0,.35); display:flex; align-items:center; justify-content:center; z-index:100; padding:16px; }
-  .tender-modal.hidden { display:none; }
-  .tender-modal-body { background:#fff; border-radius:16px; width:min(1100px, 98vw); max-height:92vh; overflow:auto; box-shadow: var(--shadow); padding:16px; }
-  .tender-modal-header { display:flex; align-items:center; justify-content:space-between; gap:12px; padding-bottom:12px; border-bottom:1px solid var(--border); }
-  .tender-controls { margin-top:12px; padding:12px; border:1px solid var(--border); border-radius:12px; background:#fff; }
-  .tender-controls-row { display:grid; grid-template-columns: 1.4fr 0.8fr 0.6fr; gap:12px; align-items:start; }
-  .tender-controls-actions { display:flex; gap:8px; align-items:center; justify-content:flex-end; padding-top:22px; }
-  .tender-label { font-size:12px; font-weight:800; color:#334155; text-transform:uppercase; letter-spacing:.02em; margin-bottom:6px; }
-  .tender-section { margin-top:14px; }
-  .tender-section-title { display:flex; align-items:center; gap:10px; font-weight:900; color:#0f172a; }
-  .tender-box { border:1px solid var(--border); border-radius:12px; padding:12px; background:#fff; }
-  .tender-box .empty { color:#64748b; font-size:13px; }
+  /* modal */
+  .tender-modal {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,.35);
+    display:flex; align-items:center; justify-content:center;
+    z-index: 1000;
+  }
+  .tender-modal-body {
+    background:#fff; border-radius: 18px; width: min(1100px, 95vw);
+    max-height: 90vh; overflow:auto; box-shadow: var(--shadow);
+    padding: 16px;
+  }
+  .tender-modal-header { display:flex; justify-content:space-between; align-items:center; gap:12px; padding: 8px 6px 12px; border-bottom: 1px solid var(--border); }
+  .tender-modal-grid {
+    display:grid;
+    grid-template-columns: 1.2fr 1fr auto;
+    gap: 12px;
+    padding: 12px 6px 6px;
+  }
+  .tender-box { border:1px solid var(--border); border-radius: 14px; padding: 12px; background:#fff; }
+  .tender-box-title { font-weight: 900; font-size: 12px; text-transform: uppercase; color:#475569; margin-bottom: 8px; }
+  .tender-box-actions { display:flex; align-items:flex-start; gap:10px; justify-content:flex-end; }
 
-  @media (max-width: 900px) {
-    .tender-controls-row { grid-template-columns: 1fr; }
-    .tender-controls-actions { justify-content:flex-start; padding-top:0; }
+  .tender-section { padding: 10px 6px; }
+  .tender-section-title { font-weight: 900; margin-bottom: 8px; }
+  .tender-benchmark { border:1px solid var(--border); border-radius: 14px; padding: 10px 12px; background:#fff; }
+  .tender-benchmark .row { display:flex; gap:14px; flex-wrap:wrap; align-items:center; }
+  .tender-benchmark .row b { font-weight: 900; }
+  .sort-th { cursor:pointer; user-select:none; }
+  .sort-th span { opacity:.7; font-weight: 700; margin-left: 6px; }
+
+  @media (max-width: 980px) {
+    .tender-modal-grid { grid-template-columns: 1fr; }
+    .tender-grid-head, .tender-grid-row { grid-template-columns: 50px 2fr 90px 60px 1fr 1fr 90px 70px 1.4fr 110px; }
   }
 </style>
 
+<script src="/static/tenders.js"></script>
 <script>
-  window.__tendersDemoMode = "project";
+  window.tendersDemo = true;
 </script>
-<script src="/static/tenders_demo.js"></script>
+
 {% endblock %}
