@@ -21,6 +21,7 @@ from werkzeug.utils import secure_filename
 
 import import_price
 import pandas as pd
+from tenders import tenders_bp
 
 try:
     from openpyxl import Workbook
@@ -278,6 +279,8 @@ def create_app() -> Flask:
             ensure_schema_compare(conn)
     except Exception:
         pass
+
+    app.register_blueprint(tenders_bp)
 
     # ---------------- Pages ----------------
     @app.route("/", methods=["GET"])

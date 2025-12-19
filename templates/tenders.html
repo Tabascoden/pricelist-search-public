@@ -1,56 +1,20 @@
 {% extends 'base.html' %}
 {% block content %}
-<div class="card">
-  <div class="cardHeader">
+<div class="card" id="tender-page">
+  <div class="cardHeader tender-flex">
     <div>
       <h1>Тендеры</h1>
-      <div class="sub">Создание и ведение проектов для сравнения прайсов</div>
+      <div class="sub">Создание и ведение проектов</div>
     </div>
-    <div class="right">
-      <form id="createForm" enctype="multipart/form-data">
-        <input type="text" name="title" class="input" placeholder="Название проекта (опц.)" style="max-width:240px;">
-        <input type="file" name="file" accept=".xlsx,.xls,.csv" required>
-        <button class="btn primary" type="submit">Создать из XLSX</button>
-      </form>
-    </div>
+    <form id="tender-create-form" class="tender-flex tender-form">
+      <input type="text" name="title" id="tender-title" class="input" placeholder="Название проекта (опционально)">
+      <button class="btn primary" type="submit">Создать</button>
+    </form>
   </div>
-  <div id="tendersList"></div>
+  <div id="tender-projects" class="tender-table-wrap"></div>
 </div>
+<script src="/static/tenders.js"></script>
 <script>
-const listEl = document.getElementById('tendersList');
-const form = document.getElementById('createForm');
-
-async function loadList(){
-  listEl.innerHTML = 'Загрузка...';
-  const resp = await fetch('/api/tenders');
-  const data = await resp.json();
-  const items = data.projects || [];
-  if(!items.length){ listEl.innerHTML = '<div class="sub">Проектов пока нет.</div>'; return; }
-  let html = '<div class="tableWrap"><table><tr><th>ID</th><th>Название</th><th>Создан</th><th>Позиций</th><th></th></tr>';
-  for(const p of items){
-    html += `<tr><td>${p.id}</td><td>${p.title||''}</td><td>${new Date(p.created_at).toLocaleString('ru-RU')}</td><td>${p.items_count||0}</td><td><a class="btn" href="/tenders/${p.id}">Открыть</a></td></tr>`;
-  }
-  html += '</table></div>';
-  listEl.innerHTML = html;
-}
-
-form.addEventListener('submit', async (e)=>{
-  e.preventDefault();
-  const fd = new FormData(form);
-  try {
-    const resp = await fetch('/api/tenders', {method:'POST', body: fd});
-    const data = await resp.json();
-    if(!resp.ok){
-      const details = data.details ? `\n${data.details}` : '';
-      alert((data.error||'Ошибка') + details);
-      return;
-    }
-    if(data.project){ window.location = `/tenders/${data.project.id}`; }
-  } catch(err){
-    alert(`Ошибка загрузки файла: ${err}`);
-  }
-});
-
-loadList();
+  window.tenderPage = true;
 </script>
 {% endblock %}

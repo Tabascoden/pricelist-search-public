@@ -1,256 +1,54 @@
 {% extends 'base.html' %}
 {% block content %}
-<div class="card">
-  <div class="cardHeader">
+<div class="card" id="tender-project" data-project-id="{{ project_id }}">
+  <div class="cardHeader tender-flex">
     <div>
       <h1>Тендер #{{ project_id }}</h1>
-      <div class="sub">Подбор предложений и сравнение по цене за базовую единицу</div>
+      <div class="sub">Загрузка позиций и подбор предложений</div>
     </div>
-    <div class="right">
-      <button class="btn" id="btnExport">Экспорт XLSX</button>
-      <button class="btn danger" id="btnDelete">Удалить</button>
+    <div class="tender-flex tender-actions">
+      <input type="file" id="tender-upload" accept=".xlsx" style="min-width:200px;">
+      <button class="btn" id="tender-upload-btn">Загрузить</button>
+      <button class="btn" id="tender-autopick">Автоподбор</button>
+      <button class="btn primary" id="tender-export">Экспорт</button>
     </div>
   </div>
-  <div id="projectBody">Загрузка...</div>
+  <div id="tender-items" class="tender-table-wrap">Загрузка...</div>
+</div>
+
+<div class="tender-modal hidden" id="tender-modal">
+  <div class="tender-modal-body">
+    <div class="tender-modal-header">
+      <h3 id="tender-modal-title">Предложения</h3>
+      <button class="btn" id="tender-modal-close">Закрыть</button>
+    </div>
+    <div id="tender-modal-content" class="tender-table-wrap"></div>
+  </div>
 </div>
 
 <style>
-  .gridDense{display:flex; flex-direction:column; gap:10px;}
-  .gridDenseHead, .gridDenseRow{display:grid; grid-template-columns:1.4fr 1.4fr 1.6fr 1fr; gap:10px; align-items:start;}
-  .gridDenseHead div{font-size:12px; text-transform:uppercase; color:var(--muted); font-weight:800; letter-spacing:0.3px;}
-  .gridCell{background:#fff; border:1px solid var(--border); border-radius:12px; padding:10px 12px; box-shadow:var(--shadow2); min-height:100%;}
-  .gridCell h4{margin:0 0 6px; font-size:15px;}
-  .gridMeta{color:var(--muted); font-size:12px; line-height:1.4;}
-  .gridTags{display:flex; gap:6px; flex-wrap:wrap; margin-top:6px;}
-  .tag{display:inline-flex; align-items:center; gap:4px; padding:4px 8px; border-radius:999px; background:var(--primary-weak); color:#1D4ED8; font-size:12px; font-weight:800;}
-  .tag.gray{background:#F1F5F9; color:#334155;}
-  .tag.red{background:#FEF2F2; color:#B91C1C;}
-  .offerList{display:flex; flex-direction:column; gap:8px;}
-  .offerCard{border:1px solid var(--border); border-radius:10px; padding:8px 10px; background:#F9FBFF;}
-  .offerCard h5{margin:0 0 4px; font-size:14px;}
-  .offerPrice{font-weight:800; font-size:14px;}
-  .offerMeta{color:var(--muted); font-size:12px; line-height:1.4;}
-  .gridActions{display:flex; gap:8px; flex-wrap:wrap; margin-top:8px;}
-  .btn.compact{height:34px; padding:0 12px; border-radius:10px; font-size:13px;}
-  .gridDenseRow{border:1px solid transparent; border-radius:12px; padding:6px;}
-  .gridDenseRow:nth-child(odd){background:#F8FAFF;}
-  .finalBlock{border:1px dashed var(--border); border-radius:10px; padding:8px 10px; background:#FCFEFF;}
-  @media (max-width: 960px){
-    .gridDenseHead, .gridDenseRow{grid-template-columns:1fr;}
-    .gridCell{width:100%;}
+  .tender-flex { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .tender-form { margin-left: auto; }
+  .tender-table-wrap { width: 100%; }
+  .tender-row { display: grid; grid-template-columns: 1.4fr 0.5fr 0.8fr 1.2fr 0.6fr; gap: 12px; align-items: center; padding: 12px; border-bottom: 1px solid var(--border); }
+  .tender-head { font-weight: 700; font-size: 13px; text-transform: uppercase; color: #475569; background: #f8fafc; }
+  .tender-row:nth-child(even) { background: #f8fafc; }
+  .tender-offer { font-size: 13px; color: #334155; }
+  .tender-offer strong { display: block; }
+  .tender-modal { position: fixed; inset: 0; background: rgba(0,0,0,0.35); display: flex; align-items: center; justify-content: center; z-index: 100; }
+  .tender-modal-body { background: #fff; border-radius: 14px; padding: 16px; width: min(900px, 95vw); box-shadow: var(--shadow); }
+  .tender-modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+  .tender-offers-table { width: 100%; border-collapse: collapse; }
+  .tender-offers-table th, .tender-offers-table td { padding: 10px 12px; border-bottom: 1px solid var(--border); text-align: left; }
+  .tender-offers-table th { background: #f8fafc; font-size: 12px; text-transform: uppercase; color: #475569; }
+  .tender-tag { display: inline-flex; align-items: center; padding: 4px 8px; border-radius: 999px; background: #eef2ff; color: #312e81; font-size: 12px; font-weight: 700; margin-top: 4px; }
+  @media (max-width: 900px) {
+    .tender-row { grid-template-columns: 1fr; }
   }
 </style>
 
-<div class="card" id="searchPanel" style="display:none">
-  <div class="cardHeader"><h3 id="searchTitle"></h3><button class="btn" onclick="closeSearch()">Закрыть</button></div>
-  <div class="controls">
-    <input class="input" id="searchInput" placeholder="Поиск по базе">
-    <select class="select" id="searchSort">
-      <option value="ppu_asc">Цена за баз. ед.</option>
-      <option value="price_asc">Цена</option>
-      <option value="rank">Релевантность</option>
-    </select>
-    <button class="btn primary" onclick="runSearch()">Искать</button>
-  </div>
-  <div id="searchResults" class="tableWrap" style="margin-top:10px"></div>
-</div>
-
+<script src="/static/tenders.js"></script>
 <script>
-const projectId = {{ project_id }};
-let currentProject = null;
-let currentItemId = null;
-
-function offerPriceBlock(off){
-  if(!off) return '';
-  const total = off.total_price != null ? `${fmtPrice(off.total_price)} ₽` : '';
-  const perUnit = off.price_per_unit != null ? `${fmtPrice(off.price_per_unit)} ₽/${esc(off.base_unit||off.unit||'')}` : '';
-  const raw = off.price != null ? `${fmtPrice(off.price)} ₽` : '';
-  const parts = [];
-  if(total){ parts.push(`<span class="offerPrice">${total}</span>`); }
-  if(perUnit){ parts.push(`<span class="gridMeta">PPU ${perUnit}</span>`); }
-  else if(raw){ parts.push(`<span class="gridMeta">${raw}</span>`); }
-  return parts.join('<br>');
-}
-
-function formatOfferSummary(off){
-  if(!off) return '';
-  const parts = [];
-  const total = off.total_price;
-  const priceText = total != null ? `${fmtPrice(total)} ₽` : '';
-  if(off.price_per_unit){
-    const unit = (off.base_unit || off.unit || '').trim();
-    const unitText = unit ? ` ₽/${unit}` : ' ₽';
-    parts.push(`PPU ${fmtPrice(off.price_per_unit)}${unitText}`.trim());
-  }
-  if(off.packs_needed){
-    parts.push(`уп. ${off.packs_needed}`);
-  }
-  let label = off.supplier_name || '';
-  if(priceText){
-    label = label ? `${label}: ${priceText}` : priceText;
-  }
-  if(parts.length){
-    label += ` (${parts.join(', ')})`;
-  }
-  return label;
-}
-
-async function loadProject(){
-  const resp = await fetch(`/api/tenders/{{ project_id }}`);
-  const data = await resp.json();
-  if(!resp.ok){ document.getElementById('projectBody').innerHTML = data.error || 'Ошибка'; return; }
-  currentProject = data.project;
-  renderProject();
-}
-
-function renderProject(){
-  const wrap = document.getElementById('projectBody');
-  const p = currentProject;
-  if(!p || !p.items){ wrap.innerHTML = 'Нет данных'; return; }
-  let html = '<div class="gridDense"><div class="gridDenseHead"><div>Исходная номенклатура (Ваш файл)</div><div>Эталон (Базовый выбор)</div><div>Результаты конкурентов</div><div>Итоговый выбор</div></div>';
-  for(const it of p.items){
-    const offers = it.offers || [];
-    const baseOffer = offers.find(o=>o.id === it.selected_offer_id) || offers.find(o=>o.offer_type==='selected') || offers.find(o=>o.offer_type==='final');
-    const alternativeOffers = offers.filter(o=>o.offer_type==='alternative');
-    const finalOffer = offers.find(o=>o.offer_type==='final') || baseOffer;
-    const qtyText = it.qty ? `${fmtPrice(it.qty)} ${esc(it.unit_input||'')}` : (esc(it.unit_input||''));
-    html += `<div class="gridDenseRow">
-      <div class="gridCell">
-        <h4>${esc(it.name_input||'')}</h4>
-        <div class="gridMeta">Строка ${it.row_no||''}${qtyText ? ` · ${qtyText}` : ''}</div>
-        <div class="gridActions">
-          <button class="btn compact" onclick="openSearch(${it.id}, '${(it.name_input||'').replace(/'/g,"\\'")}')">Искать / выбрать</button>
-        </div>
-      </div>
-      <div class="gridCell">
-        ${baseOffer ? `
-          <div class="offerCard">
-            <h5>${esc(baseOffer.supplier_name||'')}</h5>
-            <div class="offerMeta">${esc(baseOffer.name_raw||'')}</div>
-            <div class="offerMeta">${offerPriceBlock(baseOffer)}</div>
-            ${baseOffer.packs_needed ? `<div class="gridMeta">Упаковок: ${fmtPrice(baseOffer.packs_needed)}</div>` : ''}
-          </div>
-        ` : '<div class="gridMeta">Эталон еще не выбран</div>'}
-        <div class="gridActions">
-          <button class="btn compact" onclick="openSearch(${it.id}, '${(it.name_input||'').replace(/'/g,"\\'")}')">Выбрать эталон</button>
-        </div>
-      </div>
-      <div class="gridCell">
-        <div class="gridMeta">Найдено: ${alternativeOffers.length} шт.</div>
-        <div class="offerList">
-          ${alternativeOffers.map(a=>`
-            <div class="offerCard">
-              <h5>${esc(a.supplier_name||'')}</h5>
-              <div class="offerMeta">${esc(a.name_raw||'')}</div>
-              <div class="offerMeta">${offerPriceBlock(a)}</div>
-              <div class="gridActions">
-                <button class="btn compact" onclick="finalizeOffer(${it.id}, ${a.id})">Сравнить / выбрать</button>
-              </div>
-            </div>
-          `).join('')}
-        </div>
-      </div>
-      <div class="gridCell">
-        ${finalOffer ? `
-          <div class="finalBlock">
-            <div class="gridMeta">Текущий выбор</div>
-            <h4>${esc(finalOffer.supplier_name||'')}</h4>
-            <div class="offerMeta">${esc(finalOffer.name_raw||'')}</div>
-            <div class="offerMeta">${offerPriceBlock(finalOffer)}</div>
-          </div>
-          <div class="gridTags">
-            <span class="tag">${finalOffer.offer_type === 'final' ? 'Финал' : 'Эталон'}</span>
-            ${finalOffer.price_per_unit ? `<span class="tag gray">PPU ${fmtPrice(finalOffer.price_per_unit)} / ${esc(finalOffer.base_unit||finalOffer.unit||'')}</span>` : ''}
-          </div>
-        ` : '<div class="gridMeta">Ничего не выбрано</div>'}
-        <div class="gridActions">
-          ${baseOffer ? `<button class="btn compact primary" onclick="finalizeOffer(${it.id}, ${baseOffer.id})">Зафиксировать эталон</button>` : ''}
-        </div>
-      </div>
-    </div>`;
-  }
-  html += '</div>';
-  wrap.innerHTML = html;
-}
-
-function openSearch(itemId, title){
-  currentItemId = itemId;
-  document.getElementById('searchPanel').style.display='block';
-  document.getElementById('searchTitle').innerText = 'Подбор: ' + title;
-  document.getElementById('searchInput').value = title;
-  runSearch();
-}
-function closeSearch(){ document.getElementById('searchPanel').style.display='none'; }
-
-async function runSearch(){
-  const q = document.getElementById('searchInput').value;
-  const sort = document.getElementById('searchSort').value;
-  const item = (currentProject.items||[]).find(i=>i.id===currentItemId) || {};
-  const params = new URLSearchParams({q, sort, limit: '40'});
-  if(item.category_id){ params.set('category_id', item.category_id); }
-  const resp = await fetch('/search?'+params.toString());
-  const data = await resp.json();
-  const list = data.items || [];
-  let html = '<table><tr><th>Поставщик</th><th>Товар</th><th>Цена</th><th>Баз. ед.</th><th></th></tr>';
-  for(const r of list){
-    html += `<tr><td>${r.supplier_name||''}</td><td>${r.name_raw||''}</td><td>${fmtPrice(r.price)}</td><td>${r.base_unit||''} ${r.base_qty||''}<br>PPU: ${fmtPrice(r.price_per_unit)}</td><td><button class="btn primary" onclick="selectItem(${r.id})">Выбрать</button></td></tr>`;
-  }
-  html += '</table>';
-  document.getElementById('searchResults').innerHTML = html;
-}
-
-async function selectItem(supplierItemId){
-  if(!currentItemId) return;
-  const item = (currentProject.items||[]).find(i=>i.id===currentItemId) || {};
-  const resp = await fetch(`/api/tenders/items/${currentItemId}/select`, {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({
-      supplier_item_id: supplierItemId,
-      tender_item_id: currentItemId,
-      project_id: currentProject?.id || projectId,
-      row_no: item.row_no
-    })
-  });
-  const data = await resp.json();
-  if(!resp.ok){ alert(data.error||'Ошибка'); return; }
-  await loadProject();
-  closeSearch();
-}
-
-async function finalizeOffer(itemId, offerId){
-  try{
-    const resp = await fetch(`/api/tenders/items/${itemId}/finalize`, {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({offer_id: offerId})
-    });
-    const data = await resp.json();
-    if(!resp.ok){
-      alert(data.error || 'Ошибка сохранения выбора');
-      return;
-    }
-    await loadProject();
-  }catch(err){
-    alert('Ошибка сохранения выбора: ' + err);
-  }
-}
-
-document.getElementById('btnDelete').onclick = async ()=>{
-  if(!confirm('Удалить проект?')) return;
-  await fetch('/api/tenders/{{ project_id }}', {method:'DELETE'});
-  window.location = '/tenders';
-};
-
-document.getElementById('btnExport').onclick = async ()=>{
-  const resp = await fetch('/api/tenders/{{ project_id }}/export', {method:'POST'});
-  const blob = await resp.blob();
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `tender_{{ project_id }}.xlsx`;
-  a.click();
-  URL.revokeObjectURL(url);
-};
-
-loadProject();
+  window.tenderProjectPage = true;
 </script>
 {% endblock %}
