@@ -1,36 +1,5 @@
 {% extends 'base.html' %}
 {% block content %}
-
-<div class="card" id="tender-page">
-  <div class="cardHeader tender-flex">
-    <div>
-      <h1>Тендеры</h1>
-      <div class="sub">Демо-визуализация (без БД/SQL). Логика и UX.</div>
-    </div>
-
-    <form id="tender-create-form" class="tender-flex tender-form">
-      <input type="text" id="tender-title" class="input" placeholder="Название проекта (опционально)">
-      <button class="btn primary" type="submit">Создать</button>
-    </form>
-  </div>
-
-  <div id="tender-projects" class="tender-table-wrap"></div>
-</div>
-
-<style>
-  .tender-flex { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
-  .tender-form { margin-left:auto; }
-  .tender-table-wrap { width:100%; margin-top:14px; }
-  .tender-actions { display:flex; gap:10px; justify-content:flex-end; flex-wrap:wrap; }
-  .tender-danger { border-color: rgba(255,0,0,.25); }
-  .tender-danger:hover { border-color: rgba(255,0,0,.45); }
-  .pill { display:inline-flex; align-items:center; gap:8px; padding:4px 10px; border-radius:999px; border:1px solid var(--border); background:#fff; font-size:12px; }
-</style>
-
-<script>
-  // Включаем демо-режим (никаких API вызовов)
-  window.tendersDemo = true;
-</script>
-<script src="/static/tenders.js"></script>
-
+  {# Для демо используем один и тот же UI и JS #}
+  {% include 'tenders.html' %}
 {% endblock %}
