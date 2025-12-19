@@ -1,56 +1,50 @@
 {% extends 'base.html' %}
 {% block content %}
-<div class="card">
-  <div class="cardHeader">
+<div class="card" id="tender-page">
+  <div class="cardHeader tender-flex">
     <div>
       <h1>Тендеры</h1>
-      <div class="sub">Создание и ведение проектов для сравнения прайсов</div>
+      <div class="sub">
+        Демо-визуализация логики. Данные хранятся в браузере (LocalStorage), БД не трогаем.
+      </div>
     </div>
-    <div class="right">
-      <form id="createForm" enctype="multipart/form-data">
-        <input type="text" name="title" class="input" placeholder="Название проекта (опц.)" style="max-width:240px;">
-        <input type="file" name="file" accept=".xlsx,.xls,.csv" required>
-        <button class="btn primary" type="submit">Создать из XLSX</button>
-      </form>
-    </div>
+
+    <form id="tender-create-form" class="tender-flex tender-form">
+      <input type="text" id="tender-title" class="input" placeholder="Название проекта (опционально)">
+      <button class="btn primary" type="submit">Создать</button>
+    </form>
   </div>
-  <div id="tendersList"></div>
+
+  <div class="tender-note">
+    <b>Как это будет работать:</b>
+    <ul>
+      <li>Создаёте тендер → открываете → загружаете XLSX (позже будет функционал).</li>
+      <li>Позиции заполняете вручную через модалку “Варианты”.</li>
+      <li>Можно нажать “Автоподбор” (в проде SQL), чтобы проставить эталоны автоматически.</li>
+      <li>Удаление тендера здесь — только демо (удаляет из браузера).</li>
+    </ul>
+  </div>
+
+  <div id="tender-projects" class="tender-table-wrap"></div>
 </div>
+
+<style>
+  .tender-flex { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+  .tender-form { margin-left:auto; }
+  .tender-table-wrap { width:100%; margin-top:12px; }
+  .tender-note { margin-top:12px; padding:12px; border:1px solid var(--border); border-radius:12px; background:#fff; }
+  .tender-note ul { margin:8px 0 0 18px; }
+  .tender-table { width:100%; border-collapse:collapse; }
+  .tender-table th, .tender-table td { border-bottom:1px solid var(--border); padding:10px 12px; text-align:left; vertical-align:top; }
+  .tender-table th { background:#f8fafc; font-size:12px; letter-spacing:.02em; text-transform:uppercase; color:#475569; }
+  .tender-actions { display:flex; gap:8px; flex-wrap:wrap; }
+  .pill { display:inline-flex; align-items:center; gap:6px; padding:4px 10px; border-radius:999px; background:#eef2ff; color:#312e81; font-size:12px; font-weight:700; }
+  .muted { color:#64748b; font-size:12px; }
+  .danger { background:#fee2e2; color:#7f1d1d; border:1px solid #fecaca; }
+</style>
+
 <script>
-const listEl = document.getElementById('tendersList');
-const form = document.getElementById('createForm');
-
-async function loadList(){
-  listEl.innerHTML = 'Загрузка...';
-  const resp = await fetch('/api/tenders');
-  const data = await resp.json();
-  const items = data.projects || [];
-  if(!items.length){ listEl.innerHTML = '<div class="sub">Проектов пока нет.</div>'; return; }
-  let html = '<div class="tableWrap"><table><tr><th>ID</th><th>Название</th><th>Создан</th><th>Позиций</th><th></th></tr>';
-  for(const p of items){
-    html += `<tr><td>${p.id}</td><td>${p.title||''}</td><td>${new Date(p.created_at).toLocaleString('ru-RU')}</td><td>${p.items_count||0}</td><td><a class="btn" href="/tenders/${p.id}">Открыть</a></td></tr>`;
-  }
-  html += '</table></div>';
-  listEl.innerHTML = html;
-}
-
-form.addEventListener('submit', async (e)=>{
-  e.preventDefault();
-  const fd = new FormData(form);
-  try {
-    const resp = await fetch('/api/tenders', {method:'POST', body: fd});
-    const data = await resp.json();
-    if(!resp.ok){
-      const details = data.details ? `\n${data.details}` : '';
-      alert((data.error||'Ошибка') + details);
-      return;
-    }
-    if(data.project){ window.location = `/tenders/${data.project.id}`; }
-  } catch(err){
-    alert(`Ошибка загрузки файла: ${err}`);
-  }
-});
-
-loadList();
+  window.__tendersDemoMode = "list";
 </script>
+<script src="/static/tenders_demo.js"></script>
 {% endblock %}
