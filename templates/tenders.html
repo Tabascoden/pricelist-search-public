@@ -8,7 +8,6 @@
       <div class="sub">Демо-визуализация (без БД/SQL). Логика и UX.</div>
     </div>
 
-    <!-- LIST: create -->
     <form id="tender-create-form" class="tender-flex tender-form" autocomplete="off">
       <input type="text" name="title" id="tender-title" class="input" placeholder="Название проекта (опционально)">
       <button class="btn primary" type="submit" id="tender-create-btn">Создать</button>
@@ -19,7 +18,7 @@
   <div id="tenders-view-list">
     <div class="tender-hint">
       <span class="tag">Демо</span>
-      Здесь список проектов. «Открыть» ведёт на <code>/tenders/&lt;id&gt;</code>. «Удалить» удаляет только в UI (localStorage).
+      «Открыть» ведёт на <code>/tenders/&lt;id&gt;</code> (в демо — без перезагрузки). «Удалить» удаляет только в UI (localStorage).
     </div>
     <div id="tender-projects" class="tender-table-wrap">Загрузка…</div>
   </div>
@@ -28,6 +27,7 @@
   <div id="tenders-view-project" class="hidden">
     <div class="tender-topbar">
       <button class="btn" id="tender-back">← Назад к списку</button>
+
       <div class="tender-title">
         <div class="h2" id="tender-project-title">Тендер</div>
         <div class="sub" id="tender-project-subtitle">
@@ -125,7 +125,6 @@
 </div>
 
 <style>
-  /* scoped styles for demo */
   #tenders-demo .tender-flex { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
   #tenders-demo .tender-form { margin-left:auto; }
   #tenders-demo .tender-table-wrap { width:100%; }
@@ -152,4 +151,129 @@
 
   #tenders-demo .tender-topbar {
     display:flex; align-items:center; gap:12px; flex-wrap:wrap;
-    padding:
+    padding: 8px 0 0 0;
+  }
+  #tenders-demo .tender-title { flex: 1 1 auto; min-width: 240px; }
+  #tenders-demo .h2 { font-size: 20px; font-weight: 800; }
+  #tenders-demo .h3 { font-size: 16px; font-weight: 800; }
+  #tenders-demo .tender-actions { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+
+  #tenders-demo .hidden { display:none !important; }
+
+  #tenders-demo .tender-grid {
+    width:100%;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    overflow: hidden;
+  }
+  #tenders-demo .tender-grid table { width:100%; border-collapse: collapse; }
+  #tenders-demo .tender-grid th, #tenders-demo .tender-grid td {
+    padding: 12px 12px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+    text-align: left;
+    font-size: 13px;
+  }
+  #tenders-demo .tender-grid thead th {
+    background: #f8fafc;
+    font-size: 12px;
+    text-transform: uppercase;
+    color: #475569;
+    letter-spacing: .02em;
+  }
+  #tenders-demo .tender-actions-col {
+    display:flex; flex-direction:column; gap:8px; align-items:flex-end;
+  }
+
+  #tenders-demo .mini {
+    width:100%;
+    border:1px solid #e6ebff;
+    border-radius: 12px;
+    overflow:hidden;
+  }
+  #tenders-demo .mini table { width:100%; border-collapse:collapse; }
+  #tenders-demo .mini td, #tenders-demo .mini th {
+    padding: 8px 10px;
+    border-bottom: 1px solid #eef2ff;
+    font-size: 12px;
+  }
+  #tenders-demo .mini th { background:#f3f6ff; color:#334155; text-transform:none; letter-spacing:0; }
+
+  #tenders-demo .tender-modal {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.35);
+    display:flex; align-items:center; justify-content:center;
+    z-index: 200;
+    padding: 20px;
+  }
+  #tenders-demo .tender-modal-body {
+    background: #fff;
+    width: min(1100px, 96vw);
+    max-height: 86vh;
+    overflow: auto;
+    border-radius: 16px;
+    padding: 16px;
+    box-shadow: var(--shadow);
+    border: 1px solid var(--border);
+  }
+  #tenders-demo .tender-modal-header {
+    display:flex; align-items:center; justify-content:space-between;
+    gap: 12px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 12px;
+  }
+  #tenders-demo .tender-modal-controls {
+    display:grid;
+    grid-template-columns: 1fr 1fr auto;
+    gap: 12px;
+    align-items:end;
+    margin-bottom: 14px;
+  }
+  #tenders-demo .tender-control {
+    border: 1px solid #e6ebff;
+    border-radius: 14px;
+    padding: 12px;
+    background: #fbfcff;
+  }
+  #tenders-demo .tender-control-title {
+    font-weight: 800;
+    font-size: 12px;
+    text-transform: uppercase;
+    color: #334155;
+    margin-bottom: 8px;
+    letter-spacing: .02em;
+  }
+  #tenders-demo .tender-control-actions { display:flex; gap:10px; align-items:center; justify-content:flex-end; }
+
+  #tenders-demo .tender-legend { margin-top: 10px; }
+  #tenders-demo .tender-legend-title { font-weight: 800; margin-bottom: 8px; }
+  #tenders-demo .tender-benchmark-box {
+    border: 1px solid #e6ebff;
+    border-radius: 14px;
+    padding: 10px 12px;
+    background: #ffffff;
+    color: #334155;
+    font-size: 13px;
+  }
+
+  #tenders-demo .tender-offers-table { width:100%; border-collapse: collapse; }
+  #tenders-demo .tender-offers-table th, #tenders-demo .tender-offers-table td {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+    text-align:left;
+    font-size: 13px;
+    vertical-align: top;
+  }
+  #tenders-demo .tender-offers-table th { background:#f8fafc; color:#475569; font-size:12px; text-transform: uppercase; }
+  #tenders-demo th.sortable { cursor:pointer; user-select:none; }
+  #tenders-demo th.sortable:hover { background:#f1f5f9; }
+
+  @media (max-width: 900px) {
+    #tenders-demo .tender-modal-controls { grid-template-columns: 1fr; }
+    #tenders-demo .tender-actions-col { align-items:stretch; }
+  }
+</style>
+
+<script src="/static/tenders.js" defer></script>
+{% endblock %}
