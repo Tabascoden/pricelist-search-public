@@ -1,12 +1,11 @@
 {% extends 'base.html' %}
 {% block content %}
+
 <div class="card" id="tender-page">
   <div class="cardHeader tender-flex">
     <div>
       <h1>Тендеры</h1>
-      <div class="sub">
-        Демо-визуализация логики. Данные хранятся в браузере (LocalStorage), БД не трогаем.
-      </div>
+      <div class="sub">Демо-визуализация. Без БД/SQL: только UX и логика работы.</div>
     </div>
 
     <form id="tender-create-form" class="tender-flex tender-form">
@@ -15,36 +14,24 @@
     </form>
   </div>
 
-  <div class="tender-note">
-    <b>Как это будет работать:</b>
-    <ul>
-      <li>Создаёте тендер → открываете → загружаете XLSX (позже будет функционал).</li>
-      <li>Позиции заполняете вручную через модалку “Варианты”.</li>
-      <li>Можно нажать “Автоподбор” (в проде SQL), чтобы проставить эталоны автоматически.</li>
-      <li>Удаление тендера здесь — только демо (удаляет из браузера).</li>
-    </ul>
-  </div>
-
   <div id="tender-projects" class="tender-table-wrap"></div>
 </div>
 
 <style>
   .tender-flex { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
   .tender-form { margin-left:auto; }
-  .tender-table-wrap { width:100%; margin-top:12px; }
-  .tender-note { margin-top:12px; padding:12px; border:1px solid var(--border); border-radius:12px; background:#fff; }
-  .tender-note ul { margin:8px 0 0 18px; }
-  .tender-table { width:100%; border-collapse:collapse; }
-  .tender-table th, .tender-table td { border-bottom:1px solid var(--border); padding:10px 12px; text-align:left; vertical-align:top; }
-  .tender-table th { background:#f8fafc; font-size:12px; letter-spacing:.02em; text-transform:uppercase; color:#475569; }
-  .tender-actions { display:flex; gap:8px; flex-wrap:wrap; }
-  .pill { display:inline-flex; align-items:center; gap:6px; padding:4px 10px; border-radius:999px; background:#eef2ff; color:#312e81; font-size:12px; font-weight:700; }
-  .muted { color:#64748b; font-size:12px; }
-  .danger { background:#fee2e2; color:#7f1d1d; border:1px solid #fecaca; }
+  .tender-table-wrap { width: 100%; margin-top: 14px; }
+  .tender-actions { display:flex; gap:10px; justify-content:flex-end; }
+  .tender-muted { opacity: .7; }
+  .tender-danger { border-color: rgba(255,0,0,.25); }
+  .tender-danger:hover { border-color: rgba(255,0,0,.45); }
+  .pill { display:inline-flex; align-items:center; gap:8px; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--border); background: #fff; font-size: 12px; }
+  .pill b { font-weight: 800; }
 </style>
 
+<script src="/static/tenders.js"></script>
 <script>
-  window.__tendersDemoMode = "list";
+  window.tendersDemo = true;
 </script>
-<script src="/static/tenders_demo.js"></script>
+
 {% endblock %}
