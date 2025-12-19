@@ -1,5 +1,128 @@
 {% extends 'base.html' %}
 {% block content %}
-  {# Для демо используем один и тот же UI и JS #}
-  {% include 'tenders.html' %}
+
+{# Используем тот же UI. JS сам определит по URL, что это /tenders/<id>, и покажет Project view #}
+<div class="card" id="tenders-demo">
+  <div class="cardHeader tender-flex">
+    <div>
+      <h1>Тендеры</h1>
+      <div class="sub">Демо-визуализация (без БД/SQL). Логика и UX.</div>
+    </div>
+
+    <form id="tender-create-form" class="tender-flex tender-form" autocomplete="off">
+      <input type="text" name="title" id="tender-title" class="input" placeholder="Название проекта (опционально)">
+      <button class="btn primary" type="submit" id="tender-create-btn">Создать</button>
+    </form>
+  </div>
+
+  <div id="tenders-view-list">
+    <div class="tender-hint">
+      <span class="tag">Демо</span>
+      «Открыть» ведёт на <code>/tenders/&lt;id&gt;</code> (в демо — без перезагрузки). «Удалить» удаляет только в UI (localStorage).
+    </div>
+    <div id="tender-projects" class="tender-table-wrap">Загрузка…</div>
+  </div>
+
+  <div id="tenders-view-project" class="hidden">
+    <div class="tender-topbar">
+      <button class="btn" id="tender-back">← Назад к списку</button>
+
+      <div class="tender-title">
+        <div class="h2" id="tender-project-title">Тендер</div>
+        <div class="sub" id="tender-project-subtitle">
+          Сравнение предложений разных поставщиков. Эталон и альтернативы.
+        </div>
+      </div>
+
+      <div class="tender-actions">
+        <input type="file" id="tender-upload" accept=".xlsx" style="max-width:220px;">
+        <button class="btn" id="tender-upload-btn">Загрузить XLSX</button>
+        <button class="btn" id="tender-autopick">Автоподбор</button>
+        <button class="btn primary" id="tender-export">Экспорт</button>
+      </div>
+    </div>
+
+    <div class="tender-hint">
+      <span class="tag">Логика</span>
+      1) Ищем кандидатов по строке закупки. 2) Пользователь выбирает «Эталон». 3) Дальше альтернативы ищем по эталону.
+      Везде «Поставщик» — отдельным столбцом.
+    </div>
+
+    <div id="tender-items" class="tender-table-wrap">Загрузка…</div>
+  </div>
+
+  <div class="tender-modal hidden" id="tender-modal" aria-hidden="true">
+    <div class="tender-modal-body" role="dialog" aria-modal="true">
+      <div class="tender-modal-header">
+        <div>
+          <div class="h3">Варианты поставщиков</div>
+          <div class="sub" id="tender-modal-subtitle">Позиция: …</div>
+        </div>
+        <button class="btn" id="tender-modal-close">Закрыть</button>
+      </div>
+
+      <div class="tender-modal-controls">
+        <div class="tender-control">
+          <div class="tender-control-title">Ручной поиск</div>
+          <input class="input" id="tender-search-manual" placeholder="Например: помидоры сливовидные">
+          <div class="sub">Если заполнено — ищем по этой строке, независимо от «основы поиска».</div>
+        </div>
+
+        <div class="tender-control">
+          <div class="tender-control-title">Основа поиска</div>
+          <select class="input" id="tender-search-base">
+            <option value="purchase">По строке закупки</option>
+            <option value="benchmark">По эталону</option>
+          </select>
+          <div class="sub" id="tender-search-base-hint">Ищем по строке закупки (первичный подбор альтернатив).</div>
+        </div>
+
+        <div class="tender-control-actions">
+          <button class="btn primary" id="tender-search-btn">Найти</button>
+          <button class="btn" id="tender-search-reset">Сброс</button>
+        </div>
+      </div>
+
+      <div class="tender-legend">
+        <div class="tender-legend-title">Текущий эталон</div>
+        <div id="tender-benchmark-box" class="tender-benchmark-box">
+          Эталон ещё не выбран. Найдите кандидатов и нажмите «Сделать эталоном».
+        </div>
+      </div>
+
+      <div class="tender-legend">
+        <div class="tender-legend-title">
+          Результаты поиска / кандидаты
+          <span class="sub" id="tender-candidates-mode">— режим: по строке закупки</span>
+        </div>
+
+        <div class="tableWrap">
+          <table class="tender-offers-table" id="tender-offers-table">
+            <thead>
+              <tr>
+                <th class="sortable" data-sort="supplier">Поставщик</th>
+                <th class="sortable" data-sort="name">Товар</th>
+                <th class="sortable" data-sort="price">Цена</th>
+                <th class="sortable" data-sort="ppu">Цена/ед</th>
+                <th class="sortable" data-sort="score">Score</th>
+                <th>Действия</th>
+              </tr>
+            </thead>
+            <tbody id="tender-offers-body">
+              <tr><td colspan="6" class="sub">Нажмите «Найти».</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="sub" style="margin-top:10px;">
+          Сортировка: клик по заголовку столбца. Повторный клик меняет направление.
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+{# Стили лежат в tenders.html, но для надёжности подключаем файл JS — он не зависит от наличия стилей #}
+<script src="/static/tenders.js" defer></script>
+
 {% endblock %}
