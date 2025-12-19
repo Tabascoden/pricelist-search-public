@@ -1,9 +1,57 @@
-// static/tenders_demo.js
+// static/tenders.js
 (() => {
-  const LS_PROJECTS = "tenders_demo_projects_v1";
+  // ===== DEMO DATA (no API) =====
+  const DEMO = {
+    projects: [
+      { id: 24, title: "Закупка на неделю", created_at: "2025-12-19T10:15:00Z", items_count: 8 },
+      { id: 23, title: "Сыр/молочка", created_at: "2025-12-18T12:10:00Z", items_count: 5 },
+      { id: 22, title: "Овощи/фрукты", created_at: "2025-12-17T08:30:00Z", items_count: 12 },
+    ],
+    projectsById: {
+      24: {
+        id: 24,
+        title: "Закупка на неделю",
+        items: [
+          { id: 1, row_no: 1, name_purchase: "Томаты, 1 кг", qty: 1, unit: "кг", benchmark: null, alternatives: [] },
+          { id: 2, row_no: 2, name_purchase: "Сулугуни 45%, 2 кг", qty: 2, unit: "кг", benchmark: null, alternatives: [] },
+          { id: 3, row_no: 3, name_purchase: "Лук репчатый, 5 кг", qty: 5, unit: "кг", benchmark: null, alternatives: [] },
+        ],
+      },
+      23: {
+        id: 23,
+        title: "Сыр/молочка",
+        items: [
+          { id: 10, row_no: 1, name_purchase: "Молоко 3.2%, 12 л", qty: 12, unit: "л", benchmark: null, alternatives: [] },
+          { id: 11, row_no: 2, name_purchase: "Сметана 20%, 3 кг", qty: 3, unit: "кг", benchmark: null, alternatives: [] },
+        ],
+      },
+      22: {
+        id: 22,
+        title: "Овощи/фрукты",
+        items: [
+          { id: 20, row_no: 1, name_purchase: "Яблоки, 10 кг", qty: 10, unit: "кг", benchmark: null, alternatives: [] },
+        ],
+      },
+    },
+  };
 
-  const nowISO = () => new Date().toISOString();
+  // offers pool (same pool reused; filtering imitates "search")
+  const OFFERS_POOL = [
+    { supplier: "Поставщик A", item: "Томаты сливовидные", price: 152.99, price_unit: 152.99, score: 0.42 },
+    { supplier: "Поставщик B", item: "Томаты тепличные", price: 113.46, price_unit: 113.46, score: 0.38 },
+    { supplier: "Поставщик B", item: "Томатная паста 70 г", price: 49.90, price_unit: 712.86, score: 0.17 },
+    { supplier: "Поставщик Г", item: "Томаты розовые", price: 177.49, price_unit: 177.49, score: 0.31 },
 
+    { supplier: "Поставщик A", item: "Сулугуни копченый", price: 124.82, price_unit: 124.82, score: 0.35 },
+    { supplier: "Поставщик B", item: "Сулугуни 45%", price: 120.69, price_unit: 120.69, score: 0.44 },
+    { supplier: "Поставщик Г", item: "Сулугуни 45% (палка)", price: 118.40, price_unit: 118.40, score: 0.41 },
+
+    { supplier: "Поставщик A", item: "Лук репчатый", price: 162.27, price_unit: 32.45, score: 0.33 },
+    { supplier: "Поставщик B", item: "Лук репчатый (сетка)", price: 148.00, price_unit: 29.60, score: 0.36 },
+    { supplier: "Поставщик Г", item: "Лук белый", price: 190.00, price_unit: 38.00, score: 0.22 },
+  ];
+
+  // ===== Helpers =====
   const esc = (s) =>
     String(s ?? "")
       .replaceAll("&", "&amp;")
@@ -12,633 +60,506 @@
       .replaceAll('"', "&quot;")
       .replaceAll("'", "&#039;");
 
-  const fmtNum = (v, digits = 4) => {
+  const fmtNum = (v, digits = 2) => {
     if (v === null || v === undefined || v === "") return "";
     const n = Number(v);
     if (!Number.isFinite(n)) return String(v);
     return new Intl.NumberFormat("ru-RU", { maximumFractionDigits: digits }).format(n);
   };
 
-  // ---------------- Storage helpers ----------------
-  function loadProjects() {
-    const raw = localStorage.getItem(LS_PROJECTS);
-    if (raw) {
-      try {
-        const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed)) return parsed;
-      } catch {}
-    }
-    // seed
-    const seed = [
-      { id: 22, title: "Закупка (демо)", created_at: nowISO() },
-      { id: 23, title: "Тендер на неделю", created_at: nowISO() },
-    ];
-    localStorage.setItem(LS_PROJECTS, JSON.stringify(seed));
-    return seed;
+  const lc = (s) => String(s ?? "").toLowerCase();
+
+  function byKeyAsc(a, b, key) {
+    const va = a?.[key];
+    const vb = b?.[key];
+
+    // numeric?
+    const na = Number(va);
+    const nb = Number(vb);
+    const aNum = Number.isFinite(na);
+    const bNum = Number.isFinite(nb);
+    if (aNum && bNum) return na - nb;
+
+    return String(va ?? "").localeCompare(String(vb ?? ""), "ru", { sensitivity: "base" });
   }
 
-  function saveProjects(projects) {
-    localStorage.setItem(LS_PROJECTS, JSON.stringify(projects));
-  }
+  // ===== /tenders page (list) =====
+  async function initTendersPage() {
+    const root = document.getElementById("tender-page");
+    if (!root) return;
 
-  function itemsKey(projectId) {
-    return `tenders_demo_items_${projectId}_v1`;
-  }
-
-  function loadItems(projectId) {
-    const raw = localStorage.getItem(itemsKey(projectId));
-    if (raw) {
-      try {
-        const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed)) return parsed;
-      } catch {}
-    }
-    // seed items for that project
-    const seed = [
-      {
-        id: 1,
-        row_no: 1,
-        name: "Томаты свежие",
-        qty: 10,
-        unit: "кг",
-        baseline: null,
-        alternatives: [],
-      },
-      {
-        id: 2,
-        row_no: 2,
-        name: "Сыр сулугуни",
-        qty: 5,
-        unit: "кг",
-        baseline: null,
-        alternatives: [],
-      },
-      {
-        id: 3,
-        row_no: 3,
-        name: "Лук репчатый",
-        qty: 8,
-        unit: "кг",
-        baseline: null,
-        alternatives: [],
-      },
-    ];
-    localStorage.setItem(itemsKey(projectId), JSON.stringify(seed));
-    return seed;
-  }
-
-  function saveItems(projectId, items) {
-    localStorage.setItem(itemsKey(projectId), JSON.stringify(items));
-  }
-
-  // ---------------- Demo data generation ----------------
-  const SUPPLIERS = ["Поставщик А", "Поставщик Б", "Поставщик В", "Поставщик Г"];
-  const PRODUCT_BANK = [
-    "Помидоры сливовидные",
-    "Томаты тепличные",
-    "Томатная паста (не подходит)",
-    "Сулугуни 45%",
-    "Сулугуни копченый",
-    "Лук репчатый",
-    "Лук красный",
-    "Томаты черри",
-    "Сыр моцарелла (альтернатива)",
-    "Томаты консервированные (не подходит)",
-  ];
-
-  function pseudoScore(query, name) {
-    const q = String(query || "").toLowerCase();
-    const n = String(name || "").toLowerCase();
-    if (!q) return 0.32;
-    if (n.includes(q.split(" ")[0])) return 0.68;
-    // простая эвристика
-    const common = q.split(" ").filter((t) => t && n.includes(t)).length;
-    return Math.min(0.85, 0.22 + common * 0.18);
-  }
-
-  function genCandidates(query, count = 10) {
-    const res = [];
-    for (let i = 0; i < count; i++) {
-      const supplier = SUPPLIERS[i % SUPPLIERS.length];
-      const name = PRODUCT_BANK[(i + Math.floor(Math.random() * 3)) % PRODUCT_BANK.length];
-      const ppu = Math.round((80 + Math.random() * 220) * 100) / 100;
-      const qty = 1;
-      const price = Math.round(ppu * qty * 100) / 100;
-      const score = Math.round(pseudoScore(query, name) * 100) / 100;
-      res.push({
-        supplier,
-        item_name: name,
-        price_per_unit: ppu,
-        price,
-        score,
-      });
-    }
-    // сортировка: score desc, ppu asc
-    res.sort((a, b) => (b.score - a.score) || (a.price_per_unit - b.price_per_unit));
-    return res;
-  }
-
-  function genAutoAlternatives(sourceLabel, basisText, count = 6) {
-    // делаем вид, что это “авто” подбор
-    const baseQuery = `${sourceLabel}:${basisText}`;
-    const arr = genCandidates(baseQuery, count).map((x) => ({ ...x, _source: sourceLabel }));
-    // убираем очевидно “не подходит” только для вида
-    return arr.filter((x) => !String(x.item_name).toLowerCase().includes("не подходит"));
-  }
-
-  // ---------------- List page ----------------
-  function initListPage() {
     const form = document.getElementById("tender-create-form");
     const input = document.getElementById("tender-title");
-    const wrap = document.getElementById("tender-projects");
-    if (!form || !wrap) return;
+    const listWrap = document.getElementById("tender-projects");
+
+    let projects = [...DEMO.projects];
 
     function render() {
-      const projects = loadProjects();
       if (!projects.length) {
-        wrap.innerHTML = `<div class="sub">Проектов пока нет.</div>`;
+        listWrap.innerHTML = `<div class="sub">Проектов пока нет.</div>`;
         return;
       }
 
-      const rows = projects
-        .slice()
-        .sort((a, b) => (b.id - a.id))
-        .map((p) => {
-          const created = p.created_at ? new Date(p.created_at).toLocaleString("ru-RU") : "";
-          const items = loadItems(p.id);
-          const baselineCount = items.filter((it) => !!it.baseline).length;
+      let html = `<div class="tableWrap"><table>
+        <tr>
+          <th>ID</th>
+          <th>Название</th>
+          <th>Создан</th>
+          <th>Позиций</th>
+          <th style="width:240px;">Действия</th>
+        </tr>`;
 
-          return `
-            <tr>
-              <td>${esc(p.id)}</td>
-              <td>
-                <div><b>${esc(p.title || "")}</b></div>
-                <div class="muted">Демо: ${baselineCount}/${items.length} эталонов</div>
-              </td>
-              <td>${esc(created)}</td>
-              <td>${esc(items.length)}</td>
-              <td>
-                <div class="tender-actions">
-                  <a class="btn" href="/tenders/${p.id}">Открыть</a>
-                  <button class="btn danger" data-action="delete" data-id="${esc(p.id)}">Удалить</button>
-                </div>
-              </td>
-            </tr>
-          `;
-        })
-        .join("");
+      for (const p of projects) {
+        const created = p.created_at ? new Date(p.created_at).toLocaleString("ru-RU") : "";
+        html += `<tr>
+          <td>${esc(p.id)}</td>
+          <td>
+            <div style="font-weight:800;">${esc(p.title || "")}</div>
+            <div class="sub">Демо: удалить/открыть (без БД)</div>
+          </td>
+          <td>${esc(created)}</td>
+          <td>${esc(p.items_count ?? 0)}</td>
+          <td>
+            <div class="tender-actions">
+              <a class="btn" href="/tenders/${p.id}">Открыть</a>
+              <button class="btn tender-danger" data-action="delete" data-id="${esc(p.id)}">Удалить</button>
+            </div>
+          </td>
+        </tr>`;
+      }
 
-      wrap.innerHTML = `
-        <div class="tableWrap">
-          <table class="tender-table">
-            <tr>
-              <th>ID</th>
-              <th>Название</th>
-              <th>Создан</th>
-              <th>Позиций</th>
-              <th>Действия</th>
-            </tr>
-            ${rows}
-          </table>
-        </div>
-      `;
+      html += `</table></div>
+      <div style="margin-top:10px;">
+        <span class="pill"><b>Важно:</b> «Удалить» сейчас только прячет проект в UI (демо).</span>
+      </div>`;
+      listWrap.innerHTML = html;
 
-      wrap.querySelectorAll('button[data-action="delete"]').forEach((btn) => {
+      listWrap.querySelectorAll('button[data-action="delete"]').forEach((btn) => {
         btn.addEventListener("click", () => {
           const id = Number(btn.dataset.id);
           if (!Number.isFinite(id)) return;
-          if (!confirm(`Удалить тендер #${id}? (Демо: удалится только в браузере)`)) return;
-
-          const projects = loadProjects().filter((x) => x.id !== id);
-          saveProjects(projects);
-          localStorage.removeItem(itemsKey(id));
+          if (!confirm(`Удалить тендер #${id}? (демо: только удалит строку из списка)`)) return;
+          projects = projects.filter((x) => x.id !== id);
           render();
         });
       });
     }
 
-    form.addEventListener("submit", (e) => {
+    form?.addEventListener("submit", (e) => {
       e.preventDefault();
-      const title = (input?.value || "").trim() || "Тендер";
-      const projects = loadProjects();
-      const maxId = projects.reduce((m, x) => Math.max(m, x.id), 0);
-      const id = maxId + 1;
+      const title = (input?.value || "").trim() || "Новый тендер (демо)";
+      const id = Math.max(0, ...projects.map((p) => p.id)) + 1;
 
-      projects.push({ id, title, created_at: nowISO() });
-      saveProjects(projects);
+      const created_at = new Date().toISOString();
+      projects.unshift({ id, title, created_at, items_count: 3 });
 
-      // пустые items для нового проекта
-      saveItems(id, []);
+      // also create demo project shell
+      DEMO.projectsById[id] = {
+        id,
+        title,
+        items: [
+          { id: 100 + id * 10 + 1, row_no: 1, name_purchase: "Позиция 1 (пример)", qty: 1, unit: "шт", benchmark: null, alternatives: [] },
+          { id: 100 + id * 10 + 2, row_no: 2, name_purchase: "Позиция 2 (пример)", qty: 2, unit: "шт", benchmark: null, alternatives: [] },
+          { id: 100 + id * 10 + 3, row_no: 3, name_purchase: "Позиция 3 (пример)", qty: 3, unit: "шт", benchmark: null, alternatives: [] },
+        ],
+      };
+
       window.location.href = `/tenders/${id}`;
     });
 
     render();
   }
 
-  // ---------------- Project page ----------------
-  function initProjectPage() {
+  // ===== /tenders/<id> page (project) =====
+  async function initTenderProjectPage() {
     const root = document.getElementById("tender-project");
     const itemsWrap = document.getElementById("tender-items");
+    const aboutWrap = document.getElementById("tender-about");
     if (!root || !itemsWrap) return;
 
     const projectId = Number(root.dataset.projectId);
     if (!Number.isFinite(projectId)) return;
 
-    // top buttons
+    // tabs
+    const tabs = root.querySelectorAll(".tab");
+    tabs.forEach((t) =>
+      t.addEventListener("click", () => {
+        tabs.forEach((x) => x.classList.remove("active"));
+        t.classList.add("active");
+        const tab = t.dataset.tab;
+        if (tab === "about") {
+          itemsWrap.classList.add("hidden");
+          aboutWrap?.classList.remove("hidden");
+        } else {
+          aboutWrap?.classList.add("hidden");
+          itemsWrap.classList.remove("hidden");
+        }
+      })
+    );
+
+    // controls (visual only)
     const btnAutopick = document.getElementById("tender-autopick");
     const btnExport = document.getElementById("tender-export");
+    btnAutopick?.addEventListener("click", () => alert("Демо: автоподбор позже подключим к SQL."));
+    btnExport?.addEventListener("click", () => alert("Демо: экспорт позже подключим к API."));
 
-    // modal elements
+    // modal refs
     const modal = document.getElementById("tender-modal");
     const modalClose = document.getElementById("tender-modal-close");
     const modalTitle = document.getElementById("tender-modal-title");
     const modalSubtitle = document.getElementById("tender-modal-subtitle");
+    const modalTableWrap = document.getElementById("tender-modal-table-wrap");
+    const benchmarkBox = document.getElementById("tender-benchmark");
+    const altBox = document.getElementById("tender-alternatives");
 
-    const searchInput = document.getElementById("tender-search-input");
-    const searchBasis = document.getElementById("tender-search-basis");
+    const manualQ = document.getElementById("tender-manual-q");
+    const basisSel = document.getElementById("tender-search-basis");
     const basisHint = document.getElementById("tender-basis-hint");
-    const btnSearch = document.getElementById("tender-search-btn");
-    const btnReset = document.getElementById("tender-search-reset");
-
-    const baselinePill = document.getElementById("tender-baseline-pill");
-    const baselineBox = document.getElementById("tender-baseline-box");
-    const candidatesWrap = document.getElementById("tender-candidates");
-    const altsWrap = document.getElementById("tender-alternatives");
-    const searchMode = document.getElementById("tender-search-mode");
-    const altsMode = document.getElementById("tender-alts-mode");
-
-    let items = loadItems(projectId);
-    if (!items.length) {
-      // если новый проект — заполним минимумом, чтобы было что смотреть
-      items = [
-        { id: 1, row_no: 1, name: "Позиция 1 (пример)", qty: 1, unit: "шт", baseline: null, alternatives: [] },
-      ];
-      saveItems(projectId, items);
-    }
-
-    let currentItemId = null;
+    const searchBtn = document.getElementById("tender-search-btn");
+    const resetBtn = document.getElementById("tender-reset-btn");
+    const modeLabel = document.getElementById("tender-search-mode");
 
     const openModal = () => modal?.classList.remove("hidden");
     const closeModal = () => modal?.classList.add("hidden");
-
     modalClose?.addEventListener("click", closeModal);
     modal?.addEventListener("click", (e) => {
       if (e.target === modal) closeModal();
     });
 
-    function getItem(itemId) {
-      return items.find((x) => x.id === itemId) || null;
+    // state
+    const project = DEMO.projectsById[projectId] || DEMO.projectsById[24];
+    const items = project.items;
+
+    let currentItem = null;
+    let currentOffers = [];
+    let sortKey = "score";
+    let sortDir = "desc"; // asc|desc
+
+    function setBasisUI(hasBenchmark) {
+      // "по эталону" доступно только если эталон выбран
+      const optBenchmark = basisSel?.querySelector('option[value="benchmark"]');
+      if (optBenchmark) optBenchmark.disabled = !hasBenchmark;
+
+      const v = basisSel?.value || "purchase";
+      if (v === "benchmark" && !hasBenchmark) basisSel.value = "purchase";
+
+      const actual = basisSel?.value || "purchase";
+      if (actual === "benchmark") {
+        basisHint.textContent = "Ищем по эталону (после выбора эталона).";
+        modeLabel.textContent = "— режим: поиск по эталону";
+      } else {
+        basisHint.textContent = "Ищем по строке закупки (первичный подбор альтернатив).";
+        modeLabel.textContent = "— режим: поиск по строке закупки";
+      }
     }
 
-    function renderItems() {
-      const rows = items
-        .slice()
-        .sort((a, b) => (a.row_no ?? a.id) - (b.row_no ?? b.id))
-        .map((it) => {
-          const hasBaseline = !!it.baseline;
-          return `
-            <tr>
-              <td>${esc(it.row_no ?? "")}</td>
-              <td><b>${esc(it.name)}</b></td>
-              <td>${esc(fmtNum(it.qty, 3))}</td>
-              <td>${esc(it.unit)}</td>
+    function offersForQuery(query) {
+      const q = lc(query);
+      if (!q) return [...OFFERS_POOL];
 
-              <td>${hasBaseline ? esc(it.baseline.supplier) : `<span class="muted">—</span>`}</td>
-              <td>${hasBaseline ? esc(it.baseline.item_name) : `<span class="muted">не выбран</span>`}</td>
-              <td>${hasBaseline ? esc(fmtNum(it.baseline.price_per_unit)) : ""}</td>
-              <td>${hasBaseline ? esc(fmtNum(it.baseline.score, 2)) : ""}</td>
+      // demo heuristic filter: contains any word >=3
+      const words = q.split(/\s+/).filter((w) => w.length >= 3);
+      if (!words.length) return [...OFFERS_POOL];
 
-              <td>
-                ${hasBaseline ? `<span class="tag">Эталон</span>` : `<span class="muted">нет эталона</span>`}
-              </td>
-              <td>
-                <div class="tender-row-actions">
-                  <button class="btn" data-action="variants" data-id="${esc(it.id)}">Варианты</button>
-                </div>
-              </td>
-            </tr>
-          `;
-        })
-        .join("");
+      return OFFERS_POOL.filter((o) => {
+        const text = lc(`${o.supplier} ${o.item}`);
+        return words.some((w) => text.includes(w));
+      });
+    }
 
-      itemsWrap.innerHTML = `
-        <div class="tableWrap">
-          <table class="tender-table">
-            <tr>
-              <th>№</th>
-              <th>Позиция закупки</th>
-              <th>Кол-во</th>
-              <th>Ед.</th>
-              <th>Эталон: Поставщик</th>
-              <th>Эталон: Товар</th>
-              <th>Цена/ед</th>
-              <th>Score</th>
-              <th>Статус</th>
-              <th></th>
-            </tr>
-            ${rows}
-          </table>
-        </div>
+    function computeSupplierCompare(offers) {
+      // take best price_unit per supplier (demo)
+      const best = new Map();
+      for (const o of offers) {
+        const cur = best.get(o.supplier);
+        if (!cur || (Number(o.price_unit) < Number(cur.price_unit))) best.set(o.supplier, o);
+      }
+      return [...best.values()].sort((a, b) => Number(a.price_unit) - Number(b.price_unit));
+    }
+
+    function renderMainTable() {
+      if (!items.length) {
+        itemsWrap.innerHTML = `<div class="sub">Пока нет строк. Позже подключим загрузку XLSX.</div>`;
+        return;
+      }
+
+      let html = `
+        <div class="tableWrap" style="overflow:auto;">
+          <div class="tender-grid-head">
+            <div>№</div>
+            <div>Позиция закупки</div>
+            <div>Кол-во</div>
+            <div>Ед.</div>
+            <div>Эталон: поставщик</div>
+            <div>Эталон: товар</div>
+            <div>Цена/ед</div>
+            <div>Score</div>
+            <div>Другие поставщики</div>
+            <div></div>
+          </div>
       `;
+
+      for (const it of items) {
+        const hasB = !!it.benchmark;
+        const status = hasB
+          ? `<span class="badge good">эталон выбран</span>`
+          : `<span class="badge warn">нет эталона</span>`;
+
+        const compareOffers = computeSupplierCompare(offersForQuery(it.name_purchase));
+        const compareChips = compareOffers
+          .slice(0, 4)
+          .map(
+            (o) => `<span class="tender-chip"><span>${esc(o.supplier)}</span><span class="price">${fmtNum(o.price_unit)} ₽</span></span>`
+          )
+          .join("") || `<span class="tender-cell-muted">пока пусто</span>`;
+
+        html += `
+          <div class="tender-grid-row" data-item="${esc(it.id)}">
+            <div><b>${esc(it.row_no ?? "")}</b></div>
+            <div>
+              <div style="font-weight:800;">${esc(it.name_purchase)}</div>
+              <div class="tender-mini">
+                Альтернативы: <b>${esc(it.alternatives?.length ?? 0)}</b> · Статус: ${status}
+              </div>
+            </div>
+            <div>${esc(fmtNum(it.qty, 3))}</div>
+            <div>${esc(it.unit)}</div>
+            <div>${hasB ? esc(it.benchmark.supplier) : `<span class="tender-cell-muted">—</span>`}</div>
+            <div>${hasB ? esc(it.benchmark.item) : `<span class="tender-cell-muted">не выбран</span>`}</div>
+            <div>${hasB ? `<b>${esc(fmtNum(it.benchmark.price_unit))} ₽</b>` : `<span class="tender-cell-muted">—</span>`}</div>
+            <div>${hasB ? esc(fmtNum(it.benchmark.score, 2)) : `<span class="tender-cell-muted">—</span>`}</div>
+            <div>${compareChips}</div>
+            <div style="display:flex; justify-content:flex-end;">
+              <button class="btn" data-action="variants" data-item="${esc(it.id)}">Варианты</button>
+            </div>
+          </div>
+        `;
+      }
+
+      html += `</div></div>`;
+      itemsWrap.innerHTML = html;
 
       itemsWrap.querySelectorAll('button[data-action="variants"]').forEach((btn) => {
         btn.addEventListener("click", () => {
-          const id = Number(btn.dataset.id);
-          if (!Number.isFinite(id)) return;
-          openVariants(id);
+          const id = Number(btn.dataset.item);
+          const it = items.find((x) => x.id === id);
+          if (!it) return;
+          openVariants(it);
         });
       });
     }
 
-    function renderBaselineBox(item) {
-      if (!item.baseline) {
-        baselinePill.style.display = "none";
-        baselineBox.innerHTML = `<div class="empty">Эталон ещё не выбран. Найдите кандидатов и нажмите “Сделать эталоном”.</div>`;
+    function renderBenchmark(it) {
+      if (!it.benchmark) {
+        benchmarkBox.innerHTML = `<span class="sub">Эталон ещё не выбран. Найдите кандидатов и нажмите «Сделать эталоном».</span>`;
         return;
       }
-      baselinePill.style.display = "inline-flex";
-      const b = item.baseline;
-      baselineBox.innerHTML = `
-        <div style="display:flex; gap:12px; flex-wrap:wrap; align-items:center; justify-content:space-between;">
-          <div>
-            <div><b>${esc(b.supplier)}</b></div>
-            <div>${esc(b.item_name)}</div>
-            <div class="muted">Цена/ед: <b>${esc(fmtNum(b.price_per_unit))}</b> · score: ${esc(fmtNum(b.score, 2))}</div>
-          </div>
-          <div style="display:flex; gap:8px; flex-wrap:wrap;">
-            <button class="btn" id="baseline-clear">Снять эталон</button>
-          </div>
+      const b = it.benchmark;
+      benchmarkBox.innerHTML = `
+        <div class="row">
+          <span class="badge good">Эталон</span>
+          <span><b>Поставщик:</b> ${esc(b.supplier)}</span>
+          <span><b>Товар:</b> ${esc(b.item)}</span>
+          <span><b>Цена/ед:</b> ${esc(fmtNum(b.price_unit))} ₽</span>
+          <span><b>Score:</b> ${esc(fmtNum(b.score, 2))}</span>
+        </div>
+        <div class="sub" style="margin-top:6px;">
+          Теперь можно переключать «Основа поиска» на <b>по эталону</b> и искать альтернативы относительно эталона.
         </div>
       `;
-      baselineBox.querySelector("#baseline-clear")?.addEventListener("click", () => {
-        item.baseline = null;
-        item.alternatives = [];
-        saveItems(projectId, items);
-        openVariants(item.id); // re-render modal
-        renderItems();
-      });
     }
 
-    function renderCandidatesTable(candidates, item) {
-      if (!candidates.length) {
-        candidatesWrap.innerHTML = `<div class="muted">Ничего не найдено. Попробуйте ручной поиск.</div>`;
+    function renderAlternatives(it) {
+      const alts = it.alternatives || [];
+      if (!alts.length) {
+        altBox.textContent = "Пока пусто.";
         return;
       }
-      const rows = candidates
-        .map((o, idx) => {
-          return `
-            <tr>
-              <td>${esc(o.supplier)}</td>
-              <td>${esc(o.item_name)}</td>
-              <td>${esc(fmtNum(o.price))}</td>
-              <td><b>${esc(fmtNum(o.price_per_unit))}</b></td>
-              <td>${esc(fmtNum(o.score, 2))}</td>
-              <td>
-                <div class="tender-row-actions">
-                  <button class="btn primary" data-action="make-baseline" data-idx="${idx}">Сделать эталоном</button>
-                  <button class="btn" data-action="add-alt" data-idx="${idx}">Добавить как альтернативу</button>
-                </div>
-              </td>
-            </tr>
-          `;
-        })
-        .join("");
-
-      candidatesWrap.innerHTML = `
+      altBox.innerHTML = `
         <div class="tableWrap">
-          <table class="tender-table">
+          <table>
             <tr>
               <th>Поставщик</th>
               <th>Товар</th>
-              <th>Цена</th>
               <th>Цена/ед</th>
               <th>Score</th>
               <th></th>
             </tr>
-            ${rows}
+            ${alts
+              .map(
+                (a, idx) => `
+              <tr>
+                <td>${esc(a.supplier)}</td>
+                <td>${esc(a.item)}</td>
+                <td><b>${esc(fmtNum(a.price_unit))} ₽</b></td>
+                <td>${esc(fmtNum(a.score, 2))}</td>
+                <td><button class="btn" data-action="remove-alt" data-idx="${idx}">Удалить</button></td>
+              </tr>`
+              )
+              .join("")}
           </table>
         </div>
       `;
 
-      candidatesWrap.querySelectorAll('button[data-action="make-baseline"]').forEach((btn) => {
+      altBox.querySelectorAll('button[data-action="remove-alt"]').forEach((btn) => {
         btn.addEventListener("click", () => {
           const idx = Number(btn.dataset.idx);
-          const chosen = candidates[idx];
-          if (!chosen) return;
-
-          // ставим эталон
-          item.baseline = {
-            supplier: chosen.supplier,
-            item_name: chosen.item_name,
-            price_per_unit: chosen.price_per_unit,
-            price: chosen.price,
-            score: chosen.score,
-          };
-
-          // после выбора эталона — пересчитываем авто-альтернативы по эталону
-          const basisText = `${item.baseline.supplier} / ${item.baseline.item_name}`;
-          item.alternatives = genAutoAlternatives("Эталон", basisText, 6);
-
-          saveItems(projectId, items);
-          openVariants(item.id); // обновляем модалку
-          renderItems(); // обновляем таблицу позиций
+          if (!Number.isFinite(idx)) return;
+          it.alternatives.splice(idx, 1);
+          renderAlternatives(it);
+          renderMainTable();
         });
       });
+    }
 
-      candidatesWrap.querySelectorAll('button[data-action="add-alt"]').forEach((btn) => {
-        btn.addEventListener("click", () => {
-          const idx = Number(btn.dataset.idx);
-          const chosen = candidates[idx];
-          if (!chosen) return;
+    function renderOffersTable(it) {
+      // header sorting UI
+      const sortArrow = (key) => {
+        if (sortKey !== key) return `<span>↕</span>`;
+        return sortDir === "asc" ? `<span>↑</span>` : `<span>↓</span>`;
+      };
 
-          const key = `${chosen.supplier}__${chosen.item_name}`;
-          const exists = (item.alternatives || []).some((a) => `${a.supplier}__${a.item_name}` === key);
-          if (!exists) {
-            item.alternatives = item.alternatives || [];
-            item.alternatives.push({ ...chosen, _source: "Ручная добавка" });
-            saveItems(projectId, items);
-            renderAlternatives(item);
+      const rows = [...currentOffers].sort((a, b) => {
+        const v = byKeyAsc(a, b, sortKey);
+        return sortDir === "asc" ? v : -v;
+      });
+
+      modalTableWrap.innerHTML = `
+        <table class="tender-offers-table">
+          <tr>
+            <th class="sort-th" data-sort="supplier">Поставщик ${sortArrow("supplier")}</th>
+            <th class="sort-th" data-sort="item">Товар ${sortArrow("item")}</th>
+            <th class="sort-th" data-sort="price">Цена ${sortArrow("price")}</th>
+            <th class="sort-th" data-sort="price_unit">Цена/ед ${sortArrow("price_unit")}</th>
+            <th class="sort-th" data-sort="score">Score ${sortArrow("score")}</th>
+            <th style="width:340px;"></th>
+          </tr>
+          ${rows
+            .map((o) => {
+              const isBenchmark =
+                it.benchmark &&
+                it.benchmark.supplier === o.supplier &&
+                it.benchmark.item === o.item;
+
+              return `
+                <tr>
+                  <td>${esc(o.supplier)} ${isBenchmark ? `<span class="badge good" style="margin-left:8px;">Эталон</span>` : ""}</td>
+                  <td>${esc(o.item)}</td>
+                  <td>${esc(fmtNum(o.price))}</td>
+                  <td><b>${esc(fmtNum(o.price_unit))}</b></td>
+                  <td>${esc(fmtNum(o.score, 2))}</td>
+                  <td style="display:flex; gap:10px; justify-content:flex-end; flex-wrap:wrap;">
+                    <button class="btn primary" data-action="make-benchmark">Сделать эталоном</button>
+                    <button class="btn" data-action="add-alt">Добавить как альтернативу</button>
+                  </td>
+                </tr>
+              `;
+            })
+            .join("")}
+        </table>
+      `;
+
+      // bind sorting
+      modalTableWrap.querySelectorAll(".sort-th").forEach((th) => {
+        th.addEventListener("click", () => {
+          const key = th.dataset.sort;
+          if (!key) return;
+          if (sortKey === key) {
+            sortDir = sortDir === "asc" ? "desc" : "asc";
+          } else {
+            sortKey = key;
+            sortDir = key === "score" ? "desc" : "asc";
           }
+          renderOffersTable(it);
+        });
+      });
+
+      // bind actions per row
+      const table = modalTableWrap.querySelector("table");
+      if (!table) return;
+
+      const trs = Array.from(table.querySelectorAll("tr")).slice(1);
+      trs.forEach((tr, idx) => {
+        const o = rows[idx];
+        if (!o) return;
+
+        tr.querySelector('[data-action="make-benchmark"]')?.addEventListener("click", () => {
+          it.benchmark = { ...o };
+          setBasisUI(true);
+          renderBenchmark(it);
+          renderMainTable();
+          alert("Демо: эталон установлен. Теперь можно искать по эталону.");
+        });
+
+        tr.querySelector('[data-action="add-alt"]')?.addEventListener("click", () => {
+          it.alternatives = it.alternatives || [];
+          it.alternatives.push({ ...o });
+          renderAlternatives(it);
+          renderMainTable();
         });
       });
     }
 
-    function renderAlternatives(item) {
-      const alts = item.alternatives || [];
-      if (!alts.length) {
-        altsWrap.innerHTML = `<div class="muted">Пока нет альтернатив. Они появятся после автоподбора или выбора эталона.</div>`;
-        return;
-      }
-      const rows = alts
-        .map((a) => {
-          return `
-            <tr>
-              <td>${esc(a.supplier)}</td>
-              <td>${esc(a.item_name)}</td>
-              <td>${esc(fmtNum(a.price))}</td>
-              <td><b>${esc(fmtNum(a.price_per_unit))}</b></td>
-              <td>${esc(fmtNum(a.score, 2))}</td>
-              <td class="muted">${esc(a._source || "")}</td>
-            </tr>
-          `;
-        })
-        .join("");
+    function runSearch(it) {
+      const manual = (manualQ?.value || "").trim();
+      const basis = basisSel?.value || "purchase";
 
-      altsWrap.innerHTML = `
-        <div class="tableWrap">
-          <table class="tender-table">
-            <tr>
-              <th>Поставщик</th>
-              <th>Товар</th>
-              <th>Цена</th>
-              <th>Цена/ед</th>
-              <th>Score</th>
-              <th>Источник</th>
-            </tr>
-            ${rows}
-          </table>
-        </div>
-      `;
-    }
-
-    function resolveBasis(item) {
-      const manual = (searchInput?.value || "").trim();
+      let q = "";
       if (manual) {
-        basisHint.textContent = "Используем ручной запрос.";
-        return { mode: "manual", text: manual };
+        q = manual;
+      } else if (basis === "benchmark" && it.benchmark) {
+        q = it.benchmark.item;
+      } else {
+        q = it.name_purchase;
       }
-      const basis = searchBasis?.value || "row";
-      if (basis === "baseline") {
-        if (!item.baseline) {
-          basisHint.textContent = "Эталона нет — переключитесь на “По строке закупки”.";
-          return { mode: "row", text: item.name };
-        }
-        basisHint.textContent = "Ищем по эталону (после выбора эталона это основной сценарий).";
-        return { mode: "baseline", text: `${item.baseline.supplier} ${item.baseline.item_name}` };
-      }
-      basisHint.textContent = "Ищем по строке закупки (первичный подбор альтернатив).";
-      return { mode: "row", text: item.name };
+
+      currentOffers = offersForQuery(q);
+      // default sort: score desc
+      sortKey = "score";
+      sortDir = "desc";
+      renderOffersTable(it);
     }
 
-    function openVariants(itemId) {
-      currentItemId = itemId;
-      const item = getItem(itemId);
-      if (!item) return;
+    function openVariants(it) {
+      currentItem = it;
 
-      modalTitle.textContent = `Варианты поставщиков`;
-      modalSubtitle.textContent = `Позиция: ${item.row_no}. ${item.name} · ${fmtNum(item.qty, 3)} ${item.unit}`;
+      modalTitle.textContent = "Варианты поставщиков";
+      modalSubtitle.textContent = `Позиция: ${it.row_no}. ${it.name_purchase} · ${fmtNum(it.qty, 3)} ${it.unit}`;
 
-      // basis select: если есть эталон — по умолчанию baseline, иначе row
-      if (item.baseline) {
-        searchBasis.value = "baseline";
-      } else {
-        searchBasis.value = "row";
-      }
+      manualQ.value = "";
+      setBasisUI(!!it.benchmark);
 
-      // baseline box
-      renderBaselineBox(item);
-
-      // candidates (по умолчанию — без ручного запроса)
-      if (searchInput) searchInput.value = "";
-      const basis = resolveBasis(item);
-
-      // подписи режимов
-      searchMode.textContent = basis.mode === "manual"
-        ? " · режим: ручной поиск"
-        : basis.mode === "baseline"
-          ? " · режим: поиск по эталону"
-          : " · режим: поиск по строке закупки";
-
-      // кандидаты
-      const candidates = genCandidates(basis.text, 12);
-      renderCandidatesTable(candidates, item);
-
-      // альтернативы (авто): сначала по строке, после эталона — по эталону
-      if (!item.baseline) {
-        item.alternatives = genAutoAlternatives("Строка", item.name, 6);
-        altsMode.textContent = " · авто-альтернативы по строке закупки";
-      } else {
-        const basisText = `${item.baseline.supplier} / ${item.baseline.item_name}`;
-        item.alternatives = genAutoAlternatives("Эталон", basisText, 6);
-        altsMode.textContent = " · авто-альтернативы по эталону";
-      }
-      saveItems(projectId, items);
-      renderAlternatives(item);
+      renderBenchmark(it);
+      renderAlternatives(it);
 
       openModal();
-      modal.setAttribute("aria-hidden", "false");
+      runSearch(it);
     }
 
-    // Search buttons
-    btnSearch?.addEventListener("click", () => {
-      const item = getItem(currentItemId);
-      if (!item) return;
-      const basis = resolveBasis(item);
-
-      searchMode.textContent = basis.mode === "manual"
-        ? " · режим: ручной поиск"
-        : basis.mode === "baseline"
-          ? " · режим: поиск по эталону"
-          : " · режим: поиск по строке закупки";
-
-      const candidates = genCandidates(basis.text, 12);
-      renderCandidatesTable(candidates, item);
+    // search controls
+    basisSel?.addEventListener("change", () => {
+      if (!currentItem) return;
+      setBasisUI(!!currentItem.benchmark);
     });
 
-    btnReset?.addEventListener("click", () => {
-      if (searchInput) searchInput.value = "";
-      const item = getItem(currentItemId);
-      if (!item) return;
-
-      // вернуть “дефолт” основы
-      searchBasis.value = item.baseline ? "baseline" : "row";
-      const basis = resolveBasis(item);
-
-      searchMode.textContent = item.baseline
-        ? " · режим: поиск по эталону"
-        : " · режим: поиск по строке закупки";
-
-      const candidates = genCandidates(basis.text, 12);
-      renderCandidatesTable(candidates, item);
+    searchBtn?.addEventListener("click", () => {
+      if (!currentItem) return;
+      runSearch(currentItem);
     });
 
-    // Autopick demo
-    btnAutopick?.addEventListener("click", () => {
-      if (!confirm("Запустить автоподбор? (Демо: проставит эталон для строк без эталона)")) return;
-
-      items.forEach((it) => {
-        if (it.baseline) return;
-        // “авто”: берём топ-кандидата по строке закупки
-        const best = genCandidates(it.name, 12)[0];
-        if (!best) return;
-
-        it.baseline = {
-          supplier: best.supplier,
-          item_name: best.item_name,
-          price_per_unit: best.price_per_unit,
-          price: best.price,
-          score: best.score,
-        };
-
-        // после автоподбора — авто-альтернативы по эталону
-        const basisText = `${it.baseline.supplier} / ${it.baseline.item_name}`;
-        it.alternatives = genAutoAlternatives("Эталон", basisText, 6);
-      });
-
-      saveItems(projectId, items);
-      renderItems();
-      alert("Готово (демо). Эталоны проставлены для строк без эталона.");
+    resetBtn?.addEventListener("click", () => {
+      if (!currentItem) return;
+      manualQ.value = "";
+      basisSel.value = "purchase";
+      setBasisUI(!!currentItem.benchmark);
+      runSearch(currentItem);
     });
 
-    btnExport?.addEventListener("click", () => {
-      alert("В демо экспорт не реализован. Здесь только визуализация UX/логики.");
-    });
-
-    renderItems();
+    renderMainTable();
   }
 
   document.addEventListener("DOMContentLoaded", () => {
-    initListPage();
-    initProjectPage();
+    initTendersPage();
+    initTenderProjectPage();
   });
 })();
