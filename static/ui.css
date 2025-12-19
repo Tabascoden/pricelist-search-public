@@ -95,3 +95,20 @@ body{
 pre{margin:0; padding:12px; overflow:auto; max-height:380px; font-size:12px; line-height:1.35}
 .hidden{display:none}
 .footer{color:var(--muted); font-size:12px; padding:4px 4px; text-align:center}
+
+.modal.hidden { display: none; }
+.modal {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,.35);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 9999;
+}
+.modal-card {
+  width: min(1100px, 95vw);
+  max-height: 85vh;
+  overflow: auto;
+  background: #fff;
+  border-radius: 12px;
+  padding: 16px;
+  box-shadow: 0 10px 30px rgba(0,0,0,.2);
+}

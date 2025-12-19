@@ -1,56 +1,44 @@
-{% extends 'base.html' %}
+{% extends "base.html" %}
 {% block content %}
-<div class="card">
-  <div class="cardHeader">
-    <div>
-      <h1>Тендеры</h1>
-      <div class="sub">Создание и ведение проектов для сравнения прайсов</div>
+<div class="container">
+  <h1>Тендеры</h1>
+
+  <div class="card">
+    <div class="row">
+      <input id="t-title" class="input" placeholder="Название тендера (например: Закупка на неделю)" />
+      <button class="btn" id="btn-create">Создать</button>
     </div>
-    <div class="right">
-      <form id="createForm" enctype="multipart/form-data">
-        <input type="text" name="title" class="input" placeholder="Название проекта (опц.)" style="max-width:240px;">
-        <input type="file" name="file" accept=".xlsx,.xls,.csv" required>
-        <button class="btn primary" type="submit">Создать из XLSX</button>
-      </form>
-    </div>
+    <div class="muted">Загрузите XLSX с номенклатурой — система предложит лучшие позиции по всем прайсам.</div>
   </div>
-  <div id="tendersList"></div>
+
+  <div class="card">
+    <h2>Проекты</h2>
+    {% if projects|length == 0 %}
+      <div class="muted">Пока нет проектов. Создайте первый.</div>
+    {% else %}
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Название</th>
+            <th>Создан</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for p in projects %}
+          <tr>
+            <td><a href="/tenders/{{p.id}}">{{ p.title }}</a></td>
+            <td class="muted">{{ p.created_at }}</td>
+            <td style="white-space:nowrap;">
+              <a class="btn btn-ghost" href="/tenders/{{p.id}}">Открыть</a>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+  </div>
 </div>
-<script>
-const listEl = document.getElementById('tendersList');
-const form = document.getElementById('createForm');
 
-async function loadList(){
-  listEl.innerHTML = 'Загрузка...';
-  const resp = await fetch('/api/tenders');
-  const data = await resp.json();
-  const items = data.projects || [];
-  if(!items.length){ listEl.innerHTML = '<div class="sub">Проектов пока нет.</div>'; return; }
-  let html = '<div class="tableWrap"><table><tr><th>ID</th><th>Название</th><th>Создан</th><th>Позиций</th><th></th></tr>';
-  for(const p of items){
-    html += `<tr><td>${p.id}</td><td>${p.title||''}</td><td>${new Date(p.created_at).toLocaleString('ru-RU')}</td><td>${p.items_count||0}</td><td><a class="btn" href="/tenders/${p.id}">Открыть</a></td></tr>`;
-  }
-  html += '</table></div>';
-  listEl.innerHTML = html;
-}
-
-form.addEventListener('submit', async (e)=>{
-  e.preventDefault();
-  const fd = new FormData(form);
-  try {
-    const resp = await fetch('/api/tenders', {method:'POST', body: fd});
-    const data = await resp.json();
-    if(!resp.ok){
-      const details = data.details ? `\n${data.details}` : '';
-      alert((data.error||'Ошибка') + details);
-      return;
-    }
-    if(data.project){ window.location = `/tenders/${data.project.id}`; }
-  } catch(err){
-    alert(`Ошибка загрузки файла: ${err}`);
-  }
-});
-
-loadList();
-</script>
+<script src="/static/tenders.js"></script>
 {% endblock %}
