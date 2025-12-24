@@ -109,6 +109,14 @@
         Сортировка: по <b>score</b> (похожесть) ↓, затем по цене ↑. Всё ниже 0.30 обычно мусор.
       </div>
 
+      <div class="tender-match-search" style="margin-top:10px;">
+        <label class="tender-control" style="flex:1 1 260px;">
+          <div class="tender-control-title">Ручной поиск</div>
+          <input class="input" id="tenders-match-search" placeholder="Например: филе куриное охлаждённое" />
+        </label>
+        <button class="btn" id="tenders-match-search-btn" type="button">Найти</button>
+      </div>
+
       <div style="margin-top:10px;">
         <table class="tender-offers-table" style="width:100%;">
           <thead>
@@ -153,6 +161,7 @@
   #tenders-demo .tender-modal { position: fixed; inset: 0; background: rgba(15, 23, 42, 0.5); display:flex; align-items:center; justify-content:center; padding: 20px; z-index: 30; }
   #tenders-demo .tender-modal-body { background: #fff; border-radius: 16px; padding: 16px; max-width: 900px; width: min(900px, 100%); max-height: 85vh; overflow: auto; box-shadow: 0 18px 35px rgba(15, 23, 42, 0.2); }
   #tenders-demo .tender-modal-header { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+  #tenders-demo .tender-match-search { display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap; }
 
   #tenders-demo .supplierTh { width: 260px; min-width:260px; }
   #tenders-demo .supplierCell { width: 260px; min-width:260px; }
