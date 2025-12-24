@@ -452,8 +452,12 @@
           </td>
           <td data-label="Позиции"><span class="badge">${esc(count)}</span></td>
           <td data-label="Действия">
-            <div style="display:flex; gap:8px;">
+            <div class="tender-actions-row">
               <a class="btn primary" style="height:36px; padding:0 12px;" href="/tenders/${esc(p.id)}">Открыть</a>
+              <label class="iconBtn tender-upload-btn" title="Загрузить список">
+                📁
+                <input type="file" data-upload-input="${esc(p.id)}" />
+              </label>
               <button class="btn danger" style="height:36px; padding:0 12px;" data-del="${esc(p.id)}" title="Удалить">✕</button>
             </div>
           </td>
@@ -462,7 +466,7 @@
     }).join("") || `
       <tr>
         <td colspan="4" style="text-align:center; padding:40px; color:var(--text-muted)">
-          Пока нет тендеров. Загрузите Excel.
+          Пока нет тендеров. Создайте новый.
         </td>
       </tr>
     `;
@@ -475,6 +479,27 @@
         await loadProjects();
         renderList();
       };
+    });
+
+    $$("input[data-upload-input]", tb).forEach(input => {
+      input.addEventListener("change", async () => {
+        const id = Number(input.getAttribute("data-upload-input"));
+        const file = input.files && input.files[0];
+        if (!file || !Number.isFinite(id)) return;
+        const fd = new FormData();
+        fd.append("file", file);
+        input.disabled = true;
+        try {
+          await apiJson(`/api/tenders/${id}/upload`, { method: "POST", body: fd });
+          await loadProjects();
+          renderList();
+        } catch (e) {
+          alert("Не удалось загрузить файл.");
+        } finally {
+          input.disabled = false;
+          input.value = "";
+        }
+      });
     });
   }
 
@@ -852,22 +877,12 @@
         }
       };
     }
-    const fileInput = $("#tenders-file-input");
-    const fileName = $("#tenders-file-name");
-    if (fileInput && fileName) {
-      fileInput.addEventListener("change", () => {
-        const name = fileInput.files && fileInput.files[0] ? fileInput.files[0].name : "Файл не выбран";
-        fileName.textContent = name;
-      });
-    }
     const addBtn = $("#btnAddTender");
     const modal = $("#tenders-modal");
     const titleInput = $("#tenders-title-input");
     const cancelBtn = $("#tenders-modal-cancel");
     addBtn?.addEventListener("click", () => {
       if (titleInput) titleInput.value = "";
-      if (fileInput) fileInput.value = "";
-      if (fileName) fileName.textContent = "Файл не выбран";
       modal?.classList.remove("hidden");
       titleInput?.focus();
     });

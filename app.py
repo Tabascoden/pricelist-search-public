@@ -363,6 +363,61 @@ def create_app() -> Flask:
             return jsonify({"error": "internal error", "details": str(e)}), 500
 
     # ---------------- API: tenders ----------------
+
+    def _import_tender_items_from_upload(conn, project_id: int, upload):
+        category_map = get_category_map(conn)
+        df = pd.read_excel(upload.stream)
+        cols = {str(c).strip().lower(): idx for idx, c in enumerate(df.columns)}
+
+        def pick(*names):
+            for n in names:
+                if n in cols:
+                    return cols[n]
+            return None
+
+        idx_name = pick("наименование", "name", "товар", "product")
+        if idx_name is None:
+            raise ValueError("Колонка 'Наименование' не найдена")
+        idx_qty = pick("кол-во", "количество", "qty", "quantity")
+        idx_unit = pick("ед", "единица", "unit", "ед.")
+        idx_cat = pick("категория", "category")
+
+        with conn.cursor() as cur:
+            cur.execute("SELECT COALESCE(MAX(row_no), 0) FROM tender_items WHERE project_id=%s;", (project_id,))
+            row_no = _scalar(cur.fetchone()) or 0
+
+            items_to_insert = []
+            for row in df.itertuples(index=False):
+                row_list = list(row)
+                name_val = str(row_list[idx_name]).strip() if idx_name is not None else ""
+                if not name_val:
+                    continue
+                qty_val = None
+                if idx_qty is not None and idx_qty < len(row_list):
+                    try:
+                        qty_val = float(row_list[idx_qty]) if row_list[idx_qty] not in (None, "") else None
+                    except Exception:
+                        qty_val = None
+                unit_val = None
+                if idx_unit is not None and idx_unit < len(row_list):
+                    unit_val = str(row_list[idx_unit]).strip() or None
+                cat_val = None
+                if idx_cat is not None and idx_cat < len(row_list):
+                    cat_val = normalize_category_value(row_list[idx_cat])
+                category_id = category_map.get(cat_val) if cat_val else None
+                row_no += 1
+                items_to_insert.append((project_id, row_no, name_val, qty_val, unit_val, category_id))
+
+            if items_to_insert:
+                psycopg2.extras.execute_values(
+                    cur,
+                    """
+                    INSERT INTO tender_items(project_id, row_no, name_input, qty, unit_input, category_id)
+                    VALUES %s
+                    """,
+                    items_to_insert,
+                )
+        return len(items_to_insert)
     def _calc_offer_totals(offer: Dict[str, Any], tender_qty: Optional[Any]):
         total_price = None
         packs_needed = None
@@ -633,66 +688,46 @@ def create_app() -> Flask:
                         proj = _load_project(conn2, pid)
                     return jsonify({"project": proj})
 
-                category_map = get_category_map(conn)
-                df = pd.read_excel(upload.stream)
-                cols = {str(c).strip().lower(): idx for idx, c in enumerate(df.columns)}
-
-                def pick(*names):
-                    for n in names:
-                        if n in cols:
-                            return cols[n]
-                    return None
-
-                idx_name = pick("наименование", "name", "товар", "product")
-                if idx_name is None:
-                    return jsonify({"error": "Колонка 'Наименование' не найдена"}), 400
-                idx_qty = pick("кол-во", "количество", "qty", "quantity")
-                idx_unit = pick("ед", "единица", "unit", "ед.")
-                idx_cat = pick("категория", "category")
-
                 with conn.cursor() as cur:
                     cur.execute("INSERT INTO tender_projects(title) VALUES (%s) RETURNING id;", (title,))
                     pid = _scalar(cur.fetchone(), "id")
-
-                    items_to_insert = []
-                    for i, row in enumerate(df.itertuples(index=False), start=1):
-                        row_list = list(row)
-                        name_val = str(row_list[idx_name]).strip() if idx_name is not None else ""
-                        if not name_val:
-                            continue
-                        qty_val = None
-                        if idx_qty is not None and idx_qty < len(row_list):
-                            try:
-                                qty_val = float(row_list[idx_qty]) if row_list[idx_qty] not in (None, "") else None
-                            except Exception:
-                                qty_val = None
-                        unit_val = None
-                        if idx_unit is not None and idx_unit < len(row_list):
-                            unit_val = str(row_list[idx_unit]).strip() or None
-                        cat_val = None
-                        if idx_cat is not None and idx_cat < len(row_list):
-                            cat_val = normalize_category_value(row_list[idx_cat])
-                        category_id = category_map.get(cat_val) if cat_val else None
-                        items_to_insert.append((pid, i, name_val, qty_val, unit_val, category_id))
-
-                    if items_to_insert:
-                        psycopg2.extras.execute_values(
-                            cur,
-                            """
-                            INSERT INTO tender_items(project_id, row_no, name_input, qty, unit_input, category_id)
-                            VALUES %s
-                            """,
-                            items_to_insert,
-                        )
-                    conn.commit()
+                _import_tender_items_from_upload(conn, pid, upload)
+                conn.commit()
 
                 with db_connect() as conn2:
                     proj = _load_project(conn2, pid)
                 return jsonify({"project": proj})
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
         except Exception as e:
             app.logger.exception("Failed to create tender project")
             return jsonify(
                 {"error": "failed to create tender project", "details": str(e)}
+            ), 500
+
+    @app.route("/api/tenders/<int:project_id>/upload", methods=["POST"])
+    def api_tenders_upload(project_id: int):
+        upload = request.files.get("file")
+        if not upload:
+            return jsonify({"error": "file required"}), 400
+        try:
+            with db_connect() as conn:
+                ensure_schema_compare(conn)
+                with conn.cursor() as cur:
+                    cur.execute("SELECT id FROM tender_projects WHERE id=%s;", (project_id,))
+                    if not cur.fetchone():
+                        return jsonify({"error": "tender project not found"}), 404
+                inserted = _import_tender_items_from_upload(conn, project_id, upload)
+                conn.commit()
+            with db_connect() as conn2:
+                proj = _load_project(conn2, project_id)
+            return jsonify({"project": proj, "inserted": inserted})
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        except Exception as e:
+            app.logger.exception("Failed to upload tender items")
+            return jsonify(
+                {"error": "failed to upload tender items", "details": str(e)}
             ), 500
 
     @app.route("/api/tenders/<int:project_id>", methods=["GET"])

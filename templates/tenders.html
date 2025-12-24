@@ -27,7 +27,7 @@
       <div class="cardHeader">
         <div>
           <h2>Тендеры</h2>
-          <div class="sub">Создавайте тендеры и загружайте Excel/CSV для сравнения.</div>
+          <div class="sub">Создавайте тендеры и загружайте списки для сравнения.</div>
         </div>
         <div class="right">
           <button class="btn primary" id="btnAddTender">+ Создать тендер</button>
@@ -127,13 +127,9 @@
         <div style="margin-top:16px;">
           <input class="input" id="tenders-title-input" type="text" name="title" placeholder="Название тендера" required>
         </div>
-        <div style="margin-top:12px;">
-          <input class="input" id="tenders-file-input" type="file" name="file" required>
-          <div class="tender-file-name" id="tenders-file-name">Файл не выбран</div>
-        </div>
         <div style="margin-top:24px; display:flex; justify-content:flex-end; gap:12px;">
           <button class="btn" type="button" id="tenders-modal-cancel">Отмена</button>
-          <button class="btn primary" type="submit" id="tenders-modal-submit">Создать и загрузить</button>
+          <button class="btn primary" type="submit" id="tenders-modal-submit">Создать</button>
         </div>
       </form>
     </div>
@@ -174,7 +170,9 @@
 
 <style>
   #tenders-demo .hidden { display:none !important; }
-  #tenders-demo .tender-file-name { font-size: 12px; color: #64748b; margin-top: 6px; }
+  #tenders-demo .tender-actions-row { display:flex; gap:8px; }
+  #tenders-demo .tender-upload-btn { position: relative; overflow: hidden; }
+  #tenders-demo .tender-upload-btn input[type="file"] { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
   #tenders-demo .tender-topbar { display:flex; gap:14px; align-items:flex-start; justify-content:space-between; flex-wrap:wrap; }
   #tenders-demo .tender-title { flex: 1 1 auto; min-width: 240px; }
   #tenders-demo .h2 { font-size: 20px; font-weight: 800; }
