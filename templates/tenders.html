@@ -71,6 +71,16 @@
 
     <div id="tenders-selected-suppliers" class="tender-legend"></div>
 
+    <div class="tender-add" style="margin-top:10px;">
+      <div class="tender-add-title">Добавить позицию вручную</div>
+      <form class="tender-add-form" id="tenders-add-item-form">
+        <input class="input" id="tenders-add-name" placeholder="Номенклатура" required />
+        <input class="input input-qty" id="tenders-add-qty" type="number" min="0" step="0.001" placeholder="Количество" />
+        <input class="input input-unit" id="tenders-add-unit" placeholder="Ед." />
+        <button class="btn" type="submit">Добавить</button>
+      </form>
+    </div>
+
     <div class="tender-grid" style="margin-top:12px;">
       <table id="tenders-project-table"></table>
     </div>
@@ -139,8 +149,10 @@
   #tenders-demo .tender-grid th, #tenders-demo .tender-grid td { border-bottom: 1px solid #e2e8f0; padding: 10px; vertical-align: top; }
   #tenders-demo .tender-grid thead th { position: sticky; top: 0; background: #f8fafc; z-index: 1; font-size:12px; text-transform: uppercase; color:#475569; }
   #tenders-demo .tender-actions-col { display:flex; gap:10px; align-items:center; justify-content:flex-end; }
-  #tenders-demo .primary { background:#111827; color:white; border-color:#111827; }
-  #tenders-demo .danger { background:#fee2e2; color:#991b1b; border-color:#fecaca; }
+  #tenders-demo .btn { background:#4f46e5; color:white; border:1px solid #4f46e5; }
+  #tenders-demo .btn:hover { background:#4338ca; border-color:#4338ca; }
+  #tenders-demo .primary { background:#4f46e5; color:white; border-color:#4f46e5; }
+  #tenders-demo .danger { background:#4f46e5; color:white; border-color:#4f46e5; }
   #tenders-demo .tender-dropdown-wrap { position: relative; }
   #tenders-demo .tender-dropdown { position: absolute; top: calc(100% + 8px); right: 0; width: 420px; background: #fff; border: 1px solid #e2e8f0; border-radius: 14px; box-shadow: 0 16px 30px rgba(15, 23, 42, 0.12); padding: 12px; z-index: 20; }
   #tenders-demo .tender-dropdown-header { display:flex; align-items:center; justify-content:space-between; gap:10px; }
@@ -161,6 +173,8 @@
   #tenders-demo .iconBtn { width:28px; height:28px; display:inline-flex; align-items:center; justify-content:center; border:1px solid #e2e8f0; background:white; border-radius:8px; cursor:pointer; }
   #tenders-demo .iconBtn:hover { background:#f8fafc; }
   #tenders-demo .iconBtn:disabled { opacity:.45; cursor:not-allowed; }
+  #tenders-demo .iconBtn.star-picked { background:#22c55e; border-color:#22c55e; color:white; }
+  #tenders-demo .iconBtn.star-picked:hover { background:#16a34a; border-color:#16a34a; }
 
   #tenders-demo .supplierCell.picked { background: #ecfdf5; outline: 2px solid #34d399; outline-offset: -2px; border-radius: 10px; }
   #tenders-demo .supplierCell.best:not(.picked) { background: #fffbeb; outline: 2px solid #fbbf24; outline-offset: -2px; border-radius: 10px; }
@@ -182,6 +196,11 @@
   #tenders-demo .suppliersItem { border:1px solid #e2e8f0; border-radius: 12px; padding: 10px; display:flex; gap:10px; align-items:flex-start; }
   #tenders-demo .suppliersItem input { transform: translateY(2px); }
   #tenders-demo .suppliersActions { display:flex; gap:10px; justify-content:flex-end; margin-top: 12px; }
+  #tenders-demo .tender-add { border:1px solid #e2e8f0; border-radius: 12px; padding: 12px; background:#fff; }
+  #tenders-demo .tender-add-title { font-weight: 700; margin-bottom: 8px; }
+  #tenders-demo .tender-add-form { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+  #tenders-demo .input-qty { width: 140px; }
+  #tenders-demo .input-unit { width: 90px; }
 
   @media (max-width: 880px){
     #tenders-demo .tender-actions-bar { width: 100%; justify-content:flex-end; }

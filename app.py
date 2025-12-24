@@ -786,6 +786,116 @@ def create_app() -> Flask:
         except Exception as e:
             return jsonify({"error": "internal error", "details": str(e)}), 500
 
+    @app.route("/api/tenders/<int:project_id>/items", methods=["POST"])
+    def api_tenders_items_add(project_id: int):
+        data = request.get_json(silent=True) or {}
+        name_input = str(data.get("name_input") or "").strip()
+        if not name_input:
+            return jsonify({"error": "name_input required"}), 400
+
+        qty_raw = data.get("qty")
+        qty_val = None
+        if qty_raw not in (None, ""):
+            try:
+                qty_val = float(str(qty_raw).replace(",", "."))
+            except Exception:
+                return jsonify({"error": "qty must be numeric"}), 400
+
+        unit_input = str(data.get("unit_input") or "").strip() or None
+
+        try:
+            with db_connect() as conn:
+                ensure_schema_compare(conn)
+                with conn.cursor() as cur:
+                    cur.execute("SELECT id FROM tender_projects WHERE id=%s;", (project_id,))
+                    if not cur.fetchone():
+                        return jsonify({"error": "tender project not found"}), 404
+                    cur.execute(
+                        "SELECT COALESCE(MAX(row_no), 0) + 1 FROM tender_items WHERE project_id=%s;",
+                        (project_id,),
+                    )
+                    row_no = _scalar(cur.fetchone())
+                    cur.execute(
+                        """
+                        INSERT INTO tender_items(project_id, row_no, name_input, qty, unit_input)
+                        VALUES (%s, %s, %s, %s, %s)
+                        RETURNING id;
+                        """,
+                        (project_id, row_no, name_input, qty_val, unit_input),
+                    )
+                    item_id = _scalar(cur.fetchone())
+                conn.commit()
+
+            return jsonify(
+                {
+                    "item": {
+                        "id": item_id,
+                        "project_id": project_id,
+                        "row_no": row_no,
+                        "name_input": name_input,
+                        "qty": qty_val,
+                        "unit_input": unit_input,
+                    }
+                }
+            )
+        except Exception as e:
+            return jsonify({"error": "internal error", "details": str(e)}), 500
+
+    @app.route("/api/tenders/items/<int:item_id>", methods=["PATCH"])
+    def api_tenders_items_update(item_id: int):
+        data = request.get_json(silent=True) or {}
+        updates = []
+        values: List[Any] = []
+
+        if "name_input" in data:
+            name_input = str(data.get("name_input") or "").strip()
+            if not name_input:
+                return jsonify({"error": "name_input required"}), 400
+            updates.append("name_input=%s")
+            values.append(name_input)
+
+        if "qty" in data:
+            qty_raw = data.get("qty")
+            if qty_raw in (None, ""):
+                qty_val = None
+            else:
+                try:
+                    qty_val = float(str(qty_raw).replace(",", "."))
+                except Exception:
+                    return jsonify({"error": "qty must be numeric"}), 400
+            updates.append("qty=%s")
+            values.append(qty_val)
+
+        if "unit_input" in data:
+            unit_input = str(data.get("unit_input") or "").strip() or None
+            updates.append("unit_input=%s")
+            values.append(unit_input)
+
+        if not updates:
+            return jsonify({"error": "no fields to update"}), 400
+
+        try:
+            with db_connect() as conn:
+                ensure_schema_compare(conn)
+                with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                    cur.execute(
+                        f"""
+                        UPDATE tender_items
+                        SET {", ".join(updates)}
+                        WHERE id=%s
+                        RETURNING id, project_id, row_no, name_input, qty, unit_input;
+                        """,
+                        (*values, item_id),
+                    )
+                    row = cur.fetchone()
+                    if not row:
+                        return jsonify({"error": "tender item not found"}), 404
+                conn.commit()
+
+            return jsonify({"item": dict(row)})
+        except Exception as e:
+            return jsonify({"error": "internal error", "details": str(e)}), 500
+
     @app.route("/api/tenders/<int:project_id>", methods=["DELETE"])
     def api_tenders_delete(project_id: int):
         try:
