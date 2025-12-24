@@ -441,24 +441,31 @@
     projectBox.classList.add("hidden");
 
     const tb = $("#tenders-list-body");
-    tb.innerHTML = (state.projects || []).map(p => `
+    tb.innerHTML = (state.projects || []).map(p => {
+      const title = p.title || `Тендер #${p.id}`;
+      const count = Number.isFinite(Number(p.items_count)) ? Number(p.items_count) : 0;
+      return `
+        <tr>
+          <td data-label="ID"><span class="badge">#${esc(p.id)}</span></td>
+          <td data-label="Название">
+            <a class="accent" href="/tenders/${esc(p.id)}">${esc(title)}</a>
+          </td>
+          <td data-label="Позиции"><span class="badge">${esc(count)}</span></td>
+          <td data-label="Действия">
+            <div class="tender-actions-row">
+              <a class="btn primary" href="/tenders/${esc(p.id)}">Открыть</a>
+              <button class="btn danger" data-del="${esc(p.id)}">Удалить</button>
+            </div>
+          </td>
+        </tr>
+      `;
+    }).join("") || `
       <tr>
-        <td>${esc(p.id)}</td>
-        <td><b>${esc(p.title || ("Тендер #" + p.id))}</b></td>
-        <td>${esc(p.items_count ?? "")}</td>
-        <td class="tender-actions-col">
-          <button class="btn" data-open="${esc(p.id)}">Открыть</button>
-          <button class="btn danger" data-del="${esc(p.id)}">Удалить</button>
+        <td colspan="4" style="text-align:center; padding:40px; color:var(--text-muted)">
+          Пока нет тендеров. Загрузите Excel.
         </td>
       </tr>
-    `).join("") || `<tr><td colspan="4" class="tender-hint">Пока нет тендеров. Загрузите Excel.</td></tr>`;
-
-    $$("button[data-open]", tb).forEach(btn => {
-      btn.onclick = () => {
-        const id = Number(btn.getAttribute("data-open"));
-        location.href = `/tenders/${id}`;
-      };
-    });
+    `;
 
     $$("button[data-del]", tb).forEach(btn => {
       btn.onclick = async () => {
@@ -836,6 +843,14 @@
         const id = j?.project?.id;
         if (id) location.href = `/tenders/${id}`;
       };
+    }
+    const fileInput = $("#tenders-file-input");
+    const fileName = $("#tenders-file-name");
+    if (fileInput && fileName) {
+      fileInput.addEventListener("change", () => {
+        const name = fileInput.files && fileInput.files[0] ? fileInput.files[0].name : "Файл не выбран";
+        fileName.textContent = name;
+      });
     }
 
     const addForm = $("#tenders-add-item-form");
