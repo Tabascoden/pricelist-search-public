@@ -541,7 +541,7 @@
       <thead>
         <tr>
           <th style="width:70px;">№</th>
-          <th style="min-width:260px;">Номенклатура</th>
+          <th style="min-width:130px;">Номенклатура</th>
           <th style="width:70px;">Кол-во</th>
           <th style="width:90px;">Ед.</th>
           ${supplierIds.map(id => `<th class="supplierTh">${esc(getSupplierName(id))}</th>`).join("")}
@@ -574,14 +574,8 @@
       }
 
       const selectedOfferId = it.selected_offer_id ? Number(it.selected_offer_id) : null;
-      let selectedOffer = selectedOfferId ? (it.offers || []).find(o => Number(o.id) === selectedOfferId) : null;
-      if (!selectedOffer) {
-        selectedOffer = (it.offers || []).find(o => o.offer_type === "selected") || null;
-      }
-      if (!selectedOffer) {
-        selectedOffer = (it.offers || []).find(o => o.offer_type === "final") || null;
-      }
-      const pickedSupplierId = selectedOffer?.supplier_id != null ? Number(selectedOffer.supplier_id) : null;
+      const cartOffer = selectedOfferId ? (it.offers || []).find(o => Number(o.id) === selectedOfferId) : null;
+      const pickedSupplierId = cartOffer?.supplier_id != null ? Number(cartOffer.supplier_id) : null;
 
       const rowCells = supplierIds.map(sid => {
         const key = `${it.id}:${sid}`;
@@ -594,6 +588,7 @@
         const selectedForSupplier = (it.offers || []).find(
           o => Number(o.supplier_id) === Number(sid) && ["selected", "final"].includes(o.offer_type)
         );
+        const isSelectedForSupplier = Boolean(selectedForSupplier);
         const m = selectedForSupplier || getMatch(it.id, sid);
         const score = m ? Number(m.score) : NaN;
 
@@ -609,7 +604,7 @@
           `;
         }
 
-        if (!m || (!Number.isFinite(score) && !picked) || (score < MIN_SCORE && !picked)) {
+        if (!m || (!Number.isFinite(score) && !isSelectedForSupplier) || (score < MIN_SCORE && !isSelectedForSupplier)) {
           return `
             <td class="supplierCell">
               <div class="supEmpty"></div>
@@ -627,7 +622,7 @@
           (!picked && bestSid === sid) ? "best" : ""
         ].filter(Boolean).join(" ");
 
-        const starClass = picked ? "iconBtn star-picked" : "iconBtn";
+        const cartClass = picked ? "iconBtn star-picked" : "iconBtn";
         return `
           <td class="${cls}">
             <div class="supName">${esc(m.name_raw || "")}</div>
@@ -638,7 +633,8 @@
             <div class="iconRow">
               <button class="iconBtn" title="Скрыть" data-block="${esc(key)}">✕</button>
               <button class="iconBtn" title="Найти другой" data-find="1" data-item-id="${esc(it.id)}" data-supplier-id="${esc(sid)}">🔍</button>
-              <button class="${starClass}" title="Выбрать в корзину" data-pick="1" data-item-id="${esc(it.id)}" data-supplier-item-id="${esc(m.supplier_item_id)}">★</button>
+              <button class="${cartClass}" title="Выбрать в корзину" data-pick="1" data-item-id="${esc(it.id)}" data-supplier-item-id="${esc(m.supplier_item_id)}">🛒</button>
+              <button class="iconBtn" title="Искать по названию" data-star="1" data-item-id="${esc(it.id)}" data-supplier-item-id="${esc(m.supplier_item_id)}">★</button>
             </div>
           </td>
         `;
@@ -703,6 +699,22 @@
       };
     });
 
+    $$("[data-star]", tbl).forEach(btn => {
+      btn.onclick = async () => {
+        const itemId = Number(btn.getAttribute("data-item-id"));
+        const supplierItemId = Number(btn.getAttribute("data-supplier-item-id"));
+        const item = state.project?.items?.find(x => Number(x.id) === Number(itemId));
+        const offer = item?.offers?.find(o => Number(o.supplier_item_id) === Number(supplierItemId));
+        const nameRaw = (offer?.name_raw || "").trim();
+        if (!nameRaw) {
+          alert("Не удалось определить название товара.");
+          return;
+        }
+        await updateTenderItem(itemId, { name_input: nameRaw });
+        await reloadProjectHard();
+      };
+    });
+
     $$("[data-qty-item-id]", tbl).forEach(input => {
       input.addEventListener("change", async () => {
         const itemId = Number(input.getAttribute("data-qty-item-id"));
@@ -763,7 +775,7 @@
 
     if (!cart.length) {
       actionsBox.innerHTML = "";
-      box.innerHTML = `<div class="tender-hint" style="margin-top:10px;">Корзина пуста. Нажимай ★ в ячейках поставщиков.</div>`;
+      box.innerHTML = `<div class="tender-hint" style="margin-top:10px;">Корзина пуста. Нажимай 🛒 в ячейках поставщиков.</div>`;
       totalsBox.innerHTML = "";
       return;
     }
