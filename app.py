@@ -144,6 +144,7 @@ def create_app() -> Flask:
             app.logger.exception("Auto-migrate failed")
 
     def ensure_schema(conn):
+        run_migrations()
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -161,6 +162,7 @@ def create_app() -> Flask:
         conn.commit()
 
     def ensure_schema_compare(conn):
+        ensure_schema(conn)
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -501,6 +503,17 @@ def create_app() -> Flask:
                 ([it["id"] for it in items] or [0],),
             )
             offers = [dict(r) for r in cur.fetchall()]
+            cur.execute(
+                """
+                SELECT tps.supplier_id, s.name
+                FROM tender_project_suppliers tps
+                JOIN suppliers s ON s.id = tps.supplier_id
+                WHERE tps.project_id=%s
+                ORDER BY s.name;
+                """,
+                (project_id,),
+            )
+            suppliers = [dict(r) for r in cur.fetchall()]
         offers_by_item: Dict[int, List[Dict[str, Any]]] = {}
         for off in offers:
             offers_by_item.setdefault(off["tender_item_id"], []).append(off)
@@ -518,7 +531,145 @@ def create_app() -> Flask:
             it["offers"] = enriched_offers
         project_dict = dict(project)
         project_dict["items"] = items
+        project_dict["suppliers"] = suppliers
         return project_dict
+
+    def _get_project_supplier_ids(conn, project_id: int) -> List[int]:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT supplier_id
+                FROM tender_project_suppliers
+                WHERE project_id=%s
+                ORDER BY supplier_id;
+                """,
+                (project_id,),
+            )
+            ids = [row[0] for row in cur.fetchall()]
+            if ids:
+                return ids
+            cur.execute("SELECT id FROM suppliers ORDER BY id;")
+            return [row[0] for row in cur.fetchall()]
+
+    def _table_columns(conn, table_name: str) -> List[str]:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name=%s
+                ORDER BY ordinal_position;
+                """,
+                (table_name,),
+            )
+            return [row[0] for row in cur.fetchall()]
+
+    def _rebuild_offers_for_item(
+        conn,
+        tender_item_id: int,
+        project_id: int,
+        selected_supplier_item_id: int,
+        per_supplier_limit: int = 5,
+    ) -> List[int]:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT id, name_input, category_id
+                FROM tender_items
+                WHERE id=%s AND project_id=%s;
+                """,
+                (tender_item_id, project_id),
+            )
+            item = cur.fetchone()
+            if not item:
+                return []
+            supplier_ids = _get_project_supplier_ids(conn, project_id)
+
+            alt_ids: List[int] = []
+            for supplier_id in supplier_ids:
+                cur.execute(
+                    """
+                    SELECT
+                      si.id AS supplier_item_id,
+                      si.supplier_id,
+                      s.name AS supplier_name,
+                      si.name_raw,
+                      si.unit,
+                      si.price,
+                      si.base_unit,
+                      si.base_qty,
+                      si.price_per_unit,
+                      si.category_id,
+                      similarity(coalesce(si.name_normalized, si.name_raw), %(q)s) AS score
+                    FROM supplier_items si
+                    JOIN suppliers s ON s.id = si.supplier_id
+                    WHERE si.supplier_id=%(supplier_id)s
+                      AND si.is_active IS TRUE
+                      AND (%(category_id)s IS NULL OR si.category_id = %(category_id)s)
+                    ORDER BY similarity(coalesce(si.name_normalized, si.name_raw), %(q)s) DESC,
+                             si.price_per_unit ASC NULLS LAST,
+                             si.id DESC
+                    LIMIT %(limit)s;
+                    """,
+                    {
+                        "supplier_id": supplier_id,
+                        "category_id": item.get("category_id"),
+                        "q": item.get("name_input"),
+                        "limit": per_supplier_limit,
+                    },
+                )
+                for alt in cur.fetchall():
+                    if alt["supplier_item_id"] == selected_supplier_item_id:
+                        continue
+                    snap_alt = {
+                        **_snapshot_offer(alt, alt["supplier_name"], item.get("category_id")),
+                        "supplier_item_id": alt.get("supplier_item_id"),
+                        "score": alt.get("score"),
+                    }
+                    cur.execute(
+                        """
+                        SELECT id
+                        FROM tender_offers
+                        WHERE tender_item_id=%s AND supplier_item_id=%s
+                        LIMIT 1;
+                        """,
+                        (tender_item_id, alt["supplier_item_id"]),
+                    )
+                    existing_alt = cur.fetchone()
+                    if existing_alt:
+                        cur.execute(
+                            """
+                            UPDATE tender_offers
+                            SET offer_type='alternative', supplier_id=%(supplier_id)s, supplier_name=%(supplier_name)s,
+                                name_raw=%(name_raw)s, unit=%(unit)s, price=%(price)s, base_unit=%(base_unit)s,
+                                base_qty=%(base_qty)s, price_per_unit=%(price_per_unit)s, category_id=%(category_id)s,
+                                score=%(score)s
+                            WHERE id=%(id)s
+                            RETURNING id;
+                            """,
+                            {"id": existing_alt["id"], **snap_alt},
+                        )
+                    else:
+                        cur.execute(
+                            """
+                            INSERT INTO tender_offers
+                              (tender_item_id, offer_type, supplier_id, supplier_item_id, supplier_name, name_raw, unit, price, base_unit, base_qty, price_per_unit, category_id, score)
+                            VALUES (%(item_id)s, 'alternative', %(supplier_id)s, %(supplier_item_id)s, %(supplier_name)s, %(name_raw)s, %(unit)s,
+                                    %(price)s, %(base_unit)s, %(base_qty)s, %(price_per_unit)s, %(category_id)s, %(score)s)
+                            RETURNING id;
+                            """,
+                            {"item_id": tender_item_id, **snap_alt},
+                        )
+                    alt_ids.append(_scalar(cur.fetchone(), "id"))
+
+            cur.execute(
+                """
+                DELETE FROM tender_offers
+                WHERE tender_item_id=%s AND offer_type='alternative' AND id <> ALL(%s);
+                """,
+                (tender_item_id, alt_ids or [0]),
+            )
+            return alt_ids
 
     @app.route("/api/tenders", methods=["GET"])
     def api_tenders_list():
@@ -642,10 +793,141 @@ def create_app() -> Flask:
         except Exception as e:
             return jsonify({"error": "internal error", "details": str(e)}), 500
 
+    @app.route("/api/tenders/<int:project_id>/suppliers", methods=["GET"])
+    def api_tenders_suppliers_get(project_id: int):
+        try:
+            with db_connect() as conn:
+                ensure_schema_compare(conn)
+                with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                    cur.execute(
+                        """
+                        SELECT tps.supplier_id, s.name
+                        FROM tender_project_suppliers tps
+                        JOIN suppliers s ON s.id = tps.supplier_id
+                        WHERE tps.project_id=%s
+                        ORDER BY s.name;
+                        """,
+                        (project_id,),
+                    )
+                    rows = cur.fetchall()
+            suppliers = [dict(r) for r in rows]
+            supplier_ids = [r["supplier_id"] for r in suppliers]
+            return jsonify({"supplier_ids": supplier_ids, "suppliers": suppliers})
+        except Exception as e:
+            return jsonify({"error": "internal error", "details": str(e)}), 500
+
+    @app.route("/api/tenders/<int:project_id>/suppliers", methods=["PUT", "POST"])
+    def api_tenders_suppliers_put(project_id: int):
+        data = request.get_json(silent=True) or {}
+        supplier_ids = data.get("supplier_ids") or []
+        if not isinstance(supplier_ids, list):
+            return jsonify({"error": "supplier_ids must be a list"}), 400
+        try:
+            supplier_ids = [int(x) for x in supplier_ids if str(x).strip()]
+        except Exception:
+            return jsonify({"error": "invalid supplier_ids"}), 400
+        try:
+            with db_connect() as conn:
+                ensure_schema_compare(conn)
+                with conn.cursor() as cur:
+                    cur.execute("DELETE FROM tender_project_suppliers WHERE project_id=%s;", (project_id,))
+                    if supplier_ids:
+                        psycopg2.extras.execute_values(
+                            cur,
+                            """
+                            INSERT INTO tender_project_suppliers(project_id, supplier_id)
+                            VALUES %s
+                            ON CONFLICT DO NOTHING;
+                            """,
+                            [(project_id, sid) for sid in supplier_ids],
+                        )
+                conn.commit()
+            return api_tenders_suppliers_get(project_id)
+        except Exception as e:
+            return jsonify({"error": "internal error", "details": str(e)}), 500
+
+    @app.route("/api/tenders/<int:project_id>/matrix", methods=["GET"])
+    def api_tenders_matrix(project_id: int):
+        supplier_ids_raw = (request.args.get("supplier_ids") or "").strip()
+        min_score_raw = request.args.get("min_score")
+        supplier_ids: List[int] = []
+        if supplier_ids_raw:
+            try:
+                supplier_ids = [int(x) for x in supplier_ids_raw.split(",") if str(x).strip()]
+            except Exception:
+                return jsonify({"error": "invalid supplier_ids"}), 400
+        try:
+            min_score = float(min_score_raw) if min_score_raw is not None else 0.0
+        except Exception:
+            min_score = 0.0
+        if not supplier_ids:
+            return jsonify({"matrix": {}})
+        try:
+            with db_connect() as conn:
+                ensure_schema_compare(conn)
+                with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                    cur.execute(
+                        """
+                        WITH suppliers AS (
+                          SELECT unnest(%(supplier_ids)s::int[]) AS supplier_id
+                        )
+                        SELECT
+                          ti.id AS tender_item_id,
+                          sup.supplier_id,
+                          si.id AS supplier_item_id,
+                          si.name_raw,
+                          si.unit,
+                          si.price,
+                          si.base_unit,
+                          si.base_qty,
+                          si.price_per_unit,
+                          similarity(coalesce(si.name_normalized, si.name_raw), ti.name_input) AS score
+                        FROM tender_items ti
+                        CROSS JOIN suppliers sup
+                        LEFT JOIN LATERAL (
+                          SELECT *
+                          FROM supplier_items si
+                          WHERE si.supplier_id = sup.supplier_id
+                            AND si.is_active IS TRUE
+                            AND (ti.category_id IS NULL OR si.category_id = ti.category_id)
+                          ORDER BY similarity(coalesce(si.name_normalized, si.name_raw), ti.name_input) DESC,
+                                   si.price_per_unit ASC NULLS LAST,
+                                   si.id DESC
+                          LIMIT 1
+                        ) si ON TRUE
+                        WHERE ti.project_id=%(project_id)s;
+                        """,
+                        {"supplier_ids": supplier_ids, "project_id": project_id},
+                    )
+                    rows = cur.fetchall()
+            matrix: Dict[str, Dict[str, Dict[str, Any]]] = {}
+            for row in rows:
+                if row["supplier_item_id"] is None:
+                    continue
+                score = row.get("score")
+                if score is not None and score < min_score:
+                    continue
+                item_key = str(row["tender_item_id"])
+                sup_key = str(row["supplier_id"])
+                matrix.setdefault(item_key, {})[sup_key] = {
+                    "supplier_id": row["supplier_id"],
+                    "supplier_item_id": row["supplier_item_id"],
+                    "name_raw": row["name_raw"],
+                    "unit": row["unit"],
+                    "price": _json_safe(row["price"]),
+                    "base_unit": row["base_unit"],
+                    "base_qty": _json_safe(row["base_qty"]),
+                    "price_per_unit": _json_safe(row["price_per_unit"]),
+                    "score": _json_safe(row["score"]),
+                }
+            return jsonify({"matrix": matrix})
+        except Exception as e:
+            return jsonify({"error": "internal error", "details": str(e)}), 500
+
     def _snapshot_offer(row: Dict[str, Any], supplier_name: str, category_id: Optional[int]):
         return {
             "supplier_id": row.get("supplier_id"),
-            "supplier_item_id": row.get("id"),
+            "supplier_item_id": row.get("id") or row.get("supplier_item_id"),
             "supplier_name": supplier_name,
             "name_raw": row.get("name_raw"),
             "unit": row.get("unit"),
@@ -661,6 +943,7 @@ def create_app() -> Flask:
         data = request.get_json(silent=True) or {}
         supplier_item_id = data.get("supplier_item_id")
         project_id = data.get("project_id")
+        tender_item_id = data.get("tender_item_id") or item_id
         row_no = data.get("row_no")
 
         if supplier_item_id is None:
@@ -669,6 +952,7 @@ def create_app() -> Flask:
         try:
             supplier_item_id = int(supplier_item_id)
             project_id = int(project_id) if project_id is not None else None
+            tender_item_id = int(tender_item_id) if tender_item_id is not None else None
         except Exception:
             return jsonify({"error": "invalid ids"}), 400
 
@@ -686,7 +970,7 @@ def create_app() -> Flask:
                         FROM tender_items
                         WHERE id=%s;
                         """,
-                        (item_id,),
+                        (tender_item_id,),
                     )
                     item = cur.fetchone()
                     if item and project_id is not None and item.get("project_id") != project_id:
@@ -759,84 +1043,7 @@ def create_app() -> Flask:
                             {"item_id": tender_item_id, **snap},
                         )
                     selected_id = _scalar(cur.fetchone(), "id")
-
-                    params = {
-                        "category_id": item.get("category_id"),
-                        "q": item.get("name_input"),
-                        "item_id": base["id"],
-                    }
-                    cur.execute(
-                        """
-                        SELECT
-                          s.id as supplier_id,
-                          s.name as supplier_name,
-                          si.id as supplier_item_id,
-                          similarity(coalesce(si.name_normalized, si.name_raw), %(q)s) as score,
-                          si.name_raw, si.unit, si.price, si.base_unit, si.base_qty, si.price_per_unit, si.category_id
-                        FROM suppliers s
-                        JOIN LATERAL (
-                          SELECT *
-                          FROM supplier_items si
-                          WHERE si.supplier_id = s.id
-                            AND si.is_active IS TRUE
-                            AND (%(category_id)s IS NULL OR si.category_id = %(category_id)s)
-                          ORDER BY similarity(coalesce(si.name_normalized, si.name_raw), %(q)s) DESC,
-                                   si.price_per_unit ASC NULLS LAST,
-                                   si.id DESC
-                          LIMIT 5
-                        ) si ON TRUE
-                        ORDER BY s.id ASC;
-                        """,
-                        params,
-                    )
-                    alts = cur.fetchall()
-                    alt_ids: List[int] = []
-                    for alt in alts:
-                        if alt["supplier_item_id"] == supplier_item_id:
-                            continue
-                        snap_alt = {
-                            **_snapshot_offer(alt, alt["supplier_name"], item.get("category_id")),
-                            "supplier_item_id": alt.get("supplier_item_id"),
-                            "score": alt.get("score"),
-                        }
-                        cur.execute(
-                            "SELECT id FROM tender_offers WHERE tender_item_id=%s AND supplier_item_id=%s LIMIT 1;",
-                            (tender_item_id, alt["supplier_item_id"]),
-                        )
-                        existing_alt = cur.fetchone()
-                        if existing_alt:
-                            cur.execute(
-                                """
-                                UPDATE tender_offers
-                                SET offer_type='alternative', supplier_id=%(supplier_id)s, supplier_name=%(supplier_name)s,
-                                    name_raw=%(name_raw)s, unit=%(unit)s, price=%(price)s, base_unit=%(base_unit)s,
-                                    base_qty=%(base_qty)s, price_per_unit=%(price_per_unit)s, category_id=%(category_id)s,
-                                    score=%(score)s
-                                WHERE id=%(id)s
-                                RETURNING id;
-                                """,
-                                {"id": existing_alt["id"], **snap_alt},
-                            )
-                        else:
-                            cur.execute(
-                                """
-                                INSERT INTO tender_offers
-                                  (tender_item_id, offer_type, supplier_id, supplier_item_id, supplier_name, name_raw, unit, price, base_unit, base_qty, price_per_unit, category_id, score)
-                                VALUES (%(item_id)s, 'alternative', %(supplier_id)s, %(supplier_item_id)s, %(supplier_name)s, %(name_raw)s, %(unit)s,
-                                        %(price)s, %(base_unit)s, %(base_qty)s, %(price_per_unit)s, %(category_id)s, %(score)s)
-                                RETURNING id;
-                                """,
-                                {"item_id": tender_item_id, **snap_alt},
-                            )
-                        alt_ids.append(_scalar(cur.fetchone(), "id"))
-
-                    cur.execute(
-                        """
-                        DELETE FROM tender_offers
-                        WHERE tender_item_id=%s AND offer_type='alternative' AND id <> ALL(%s);
-                        """,
-                        (tender_item_id, alt_ids or [0]),
-                    )
+                    _rebuild_offers_for_item(conn, tender_item_id, item["project_id"], supplier_item_id)
 
                     cur.execute(
                         "UPDATE tender_items SET selected_offer_id=%s WHERE id=%s;",
@@ -844,6 +1051,43 @@ def create_app() -> Flask:
                     )
                 conn.commit()
             return jsonify({"ok": True, "selected_offer_id": selected_id, "tender_item_id": tender_item_id})
+        except Exception as e:
+            return jsonify({"error": "internal error", "details": str(e)}), 500
+
+    @app.route("/api/tenders/items/<int:item_id>/clear", methods=["POST"])
+    def api_tenders_clear(item_id: int):
+        data = request.get_json(silent=True) or {}
+        project_id = data.get("project_id")
+        try:
+            project_id = int(project_id) if project_id is not None else None
+        except Exception:
+            project_id = None
+        try:
+            with db_connect() as conn:
+                ensure_schema_compare(conn)
+                with conn.cursor() as cur:
+                    if project_id is not None:
+                        cur.execute(
+                            "SELECT project_id FROM tender_items WHERE id=%s;",
+                            (item_id,),
+                        )
+                        row = cur.fetchone()
+                        if not row or row[0] != project_id:
+                            return jsonify({"error": "not found"}), 404
+                    cur.execute(
+                        """
+                        UPDATE tender_offers
+                        SET offer_type='alternative'
+                        WHERE tender_item_id=%s AND offer_type IN ('selected', 'final');
+                        """,
+                        (item_id,),
+                    )
+                    cur.execute(
+                        "UPDATE tender_items SET selected_offer_id=NULL WHERE id=%s;",
+                        (item_id,),
+                    )
+                conn.commit()
+            return jsonify({"status": "ok"})
         except Exception as e:
             return jsonify({"error": "internal error", "details": str(e)}), 500
 
@@ -889,6 +1133,69 @@ def create_app() -> Flask:
                         offer["packs_needed"] = packs_needed
                     offers.append(offer)
             return jsonify({"item": dict(item), "offers": offers})
+        except Exception as e:
+            return jsonify({"error": "internal error", "details": str(e)}), 500
+
+    @app.route("/api/tenders/items/<int:item_id>/matches", methods=["GET"])
+    def api_tenders_matches(item_id: int):
+        supplier_id = request.args.get("supplier_id")
+        limit = request.args.get("limit") or "25"
+        try:
+            supplier_id = int(supplier_id) if supplier_id is not None else None
+        except Exception:
+            supplier_id = None
+        try:
+            limit_i = int(limit)
+        except Exception:
+            limit_i = 25
+        limit_i = max(1, min(limit_i, 50))
+        if supplier_id is None:
+            return jsonify({"error": "supplier_id is required"}), 400
+        try:
+            with db_connect() as conn:
+                ensure_schema_compare(conn)
+                with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                    cur.execute(
+                        """
+                        SELECT id, name_input, category_id
+                        FROM tender_items
+                        WHERE id=%s;
+                        """,
+                        (item_id,),
+                    )
+                    item = cur.fetchone()
+                    if not item:
+                        return jsonify({"error": "not found"}), 404
+                    cur.execute(
+                        """
+                        SELECT
+                          si.id AS supplier_item_id,
+                          si.supplier_id,
+                          si.name_raw,
+                          si.unit,
+                          si.price,
+                          si.base_unit,
+                          si.base_qty,
+                          si.price_per_unit,
+                          similarity(coalesce(si.name_normalized, si.name_raw), %(q)s) AS score
+                        FROM supplier_items si
+                        WHERE si.supplier_id=%(supplier_id)s
+                          AND si.is_active IS TRUE
+                          AND (%(category_id)s IS NULL OR si.category_id = %(category_id)s)
+                        ORDER BY similarity(coalesce(si.name_normalized, si.name_raw), %(q)s) DESC,
+                                 si.price_per_unit ASC NULLS LAST,
+                                 si.id DESC
+                        LIMIT %(limit)s;
+                        """,
+                        {
+                            "supplier_id": supplier_id,
+                            "category_id": item.get("category_id"),
+                            "q": item.get("name_input"),
+                            "limit": limit_i,
+                        },
+                    )
+                    matches = [dict(r) for r in cur.fetchall()]
+            return jsonify({"matches": [{k: _json_safe(v) for k, v in m.items()} for m in matches]})
         except Exception as e:
             return jsonify({"error": "internal error", "details": str(e)}), 500
 
@@ -1035,6 +1342,195 @@ def create_app() -> Flask:
                     as_attachment=True,
                     download_name=f"tender_{project_id}.xlsx",
                 )
+        except Exception as e:
+            return jsonify({"error": "internal error", "details": str(e)}), 500
+
+    @app.route("/api/tenders/<int:project_id>/orders", methods=["POST"])
+    def api_tenders_orders(project_id: int):
+        try:
+            with db_connect() as conn:
+                ensure_schema_compare(conn)
+                with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                    cur.execute(
+                        """
+                        SELECT ti.id AS tender_item_id,
+                               ti.qty,
+                               toff.*
+                        FROM tender_items ti
+                        LEFT JOIN LATERAL (
+                          SELECT *
+                          FROM tender_offers toff
+                          WHERE toff.tender_item_id = ti.id
+                            AND (toff.offer_type = 'final' OR toff.id = ti.selected_offer_id)
+                          ORDER BY CASE WHEN toff.offer_type='final' THEN 0 ELSE 1 END
+                          LIMIT 1
+                        ) toff ON TRUE
+                        WHERE ti.project_id=%s;
+                        """,
+                        (project_id,),
+                    )
+                    rows = cur.fetchall()
+
+                    by_supplier: Dict[int, List[Dict[str, Any]]] = {}
+                    for row in rows:
+                        if not row.get("supplier_id") or not row.get("supplier_item_id"):
+                            continue
+                        by_supplier.setdefault(row["supplier_id"], []).append(row)
+
+                    if not by_supplier:
+                        return jsonify({"orders": []})
+
+                    order_columns = set(_table_columns(conn, "orders"))
+                    item_columns = set(_table_columns(conn, "order_items"))
+
+                    orders_out: List[Dict[str, Any]] = []
+                    for supplier_id, items in by_supplier.items():
+                        order_fields = {}
+                        if "supplier_id" in order_columns:
+                            order_fields["supplier_id"] = supplier_id
+                        if "tender_project_id" in order_columns:
+                            order_fields["tender_project_id"] = project_id
+
+                        if not order_fields:
+                            cur.execute("INSERT INTO orders DEFAULT VALUES RETURNING id;")
+                            order_id = _scalar(cur.fetchone(), "id")
+                        else:
+                            cols = ", ".join(order_fields.keys())
+                            placeholders = ", ".join(["%s"] * len(order_fields))
+                            cur.execute(
+                                f"INSERT INTO orders ({cols}) VALUES ({placeholders}) RETURNING id;",
+                                list(order_fields.values()),
+                            )
+                            order_id = _scalar(cur.fetchone(), "id")
+
+                        total_price = 0.0
+                        item_rows = []
+                        for it in items:
+                            tender_qty = it.get("qty")
+                            total_price_item, _ = _calc_offer_totals(it, tender_qty)
+                            total_price_item = float(total_price_item) if total_price_item is not None else 0.0
+                            total_price += total_price_item
+                            row = {}
+                            if "order_id" in item_columns:
+                                row["order_id"] = order_id
+                            if "supplier_item_id" in item_columns:
+                                row["supplier_item_id"] = it.get("supplier_item_id")
+                            if "tender_item_id" in item_columns:
+                                row["tender_item_id"] = it.get("tender_item_id")
+                            if "qty" in item_columns:
+                                row["qty"] = tender_qty
+                            if "price" in item_columns:
+                                row["price"] = it.get("price_per_unit") or it.get("price")
+                            if "total_price" in item_columns:
+                                row["total_price"] = total_price_item
+                            if "name_raw" in item_columns:
+                                row["name_raw"] = it.get("name_raw")
+                            if "unit" in item_columns:
+                                row["unit"] = it.get("unit")
+                            if row:
+                                item_rows.append(row)
+
+                        if item_rows:
+                            cols = list(item_rows[0].keys())
+                            psycopg2.extras.execute_values(
+                                cur,
+                                f"INSERT INTO order_items ({', '.join(cols)}) VALUES %s;",
+                                [[r.get(c) for c in cols] for r in item_rows],
+                            )
+
+                        orders_out.append(
+                            {
+                                "order_id": order_id,
+                                "supplier_id": supplier_id,
+                                "items_count": len(items),
+                                "total_price": total_price,
+                            }
+                        )
+
+                    if orders_out:
+                        supplier_ids = [o["supplier_id"] for o in orders_out]
+                        cur.execute(
+                            "SELECT id, name FROM suppliers WHERE id = ANY(%s);",
+                            (supplier_ids,),
+                        )
+                        sup_map = {row["id"]: row["name"] for row in cur.fetchall()}
+                        for o in orders_out:
+                            o["supplier_name"] = sup_map.get(o["supplier_id"])
+
+                conn.commit()
+            return jsonify({"orders": orders_out})
+        except Exception as e:
+            return jsonify({"error": "internal error", "details": str(e)}), 500
+
+    @app.route("/api/orders", methods=["GET"])
+    def api_orders_list():
+        project_id = request.args.get("project_id")
+        try:
+            project_id = int(project_id) if project_id is not None else None
+        except Exception:
+            project_id = None
+        try:
+            with db_connect() as conn:
+                ensure_schema_compare(conn)
+                with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                    if project_id is not None:
+                        cur.execute(
+                            """
+                            SELECT o.*, s.name AS supplier_name
+                            FROM orders o
+                            LEFT JOIN suppliers s ON s.id = o.supplier_id
+                            WHERE o.tender_project_id=%s
+                            ORDER BY o.id DESC;
+                            """,
+                            (project_id,),
+                        )
+                    else:
+                        cur.execute(
+                            """
+                            SELECT o.*, s.name AS supplier_name
+                            FROM orders o
+                            LEFT JOIN suppliers s ON s.id = o.supplier_id
+                            ORDER BY o.id DESC;
+                            """
+                        )
+                    rows = cur.fetchall()
+            orders = [{k: _json_safe(v) for k, v in dict(r).items()} for r in rows]
+            return jsonify({"orders": orders})
+        except Exception as e:
+            return jsonify({"error": "internal error", "details": str(e)}), 500
+
+    @app.route("/api/orders/<int:order_id>", methods=["GET"])
+    def api_orders_get(order_id: int):
+        try:
+            with db_connect() as conn:
+                ensure_schema_compare(conn)
+                with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                    cur.execute(
+                        """
+                        SELECT o.*, s.name AS supplier_name
+                        FROM orders o
+                        LEFT JOIN suppliers s ON s.id = o.supplier_id
+                        WHERE o.id=%s;
+                        """,
+                        (order_id,),
+                    )
+                    order = cur.fetchone()
+                    if not order:
+                        return jsonify({"error": "not found"}), 404
+                    cur.execute(
+                        """
+                        SELECT oi.*, si.name_raw, si.unit
+                        FROM order_items oi
+                        LEFT JOIN supplier_items si ON si.id = oi.supplier_item_id
+                        WHERE oi.order_id=%s
+                        ORDER BY oi.id ASC;
+                        """,
+                        (order_id,),
+                    )
+                    items = [dict(r) for r in cur.fetchall()]
+            order_out = {k: _json_safe(v) for k, v in dict(order).items()}
+            order_out["items"] = [{k: _json_safe(v) for k, v in r.items()} for r in items]
+            return jsonify({"order": order_out})
         except Exception as e:
             return jsonify({"error": "internal error", "details": str(e)}), 500
 
