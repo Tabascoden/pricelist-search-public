@@ -693,7 +693,7 @@ def create_app() -> Flask:
     @app.route("/api/tenders", methods=["POST"])
     def api_tenders_create():
         upload = request.files.get("file")
-        title = (request.form.get("title") or (upload.filename if upload else None) or "Тендер").strip() or "Тендер"
+        title = (request.form.get("title") or "Тендер").strip() or "Тендер"
         try:
             with db_connect() as conn:
                 ensure_schema_compare(conn)

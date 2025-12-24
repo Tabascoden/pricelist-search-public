@@ -758,17 +758,6 @@
 
   // ---------- bind top controls ----------
   function bindStaticHandlers() {
-    const createForm = $("#tenders-create-form");
-    if (createForm) {
-      createForm.onsubmit = async (e) => {
-        e.preventDefault();
-        const fd = new FormData(createForm);
-        const j = await apiJson("/api/tenders", { method: "POST", body: fd });
-        const id = j?.project?.id;
-        if (id) location.href = `/tenders/${id}`;
-      };
-    }
-
     const uploadForm = $("#tenders-upload-form");
     if (uploadForm) {
       uploadForm.onsubmit = async (e) => {
