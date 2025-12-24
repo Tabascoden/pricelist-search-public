@@ -1,26 +1,40 @@
 {% extends "base.html" %}
 {% block content %}
 
-<div class="card" id="tenders-demo">
-  <div class="cardHeader">
-    <div>
-      <h2>Тендеры</h2>
-      <div class="sub">Создавайте тендеры и загружайте Excel/CSV для сравнения.</div>
-    </div>
-    <div class="right">
-      <form class="tender-form" id="tenders-upload-form" enctype="multipart/form-data">
-        <input class="input" type="text" name="title" placeholder="Название тендера" required />
-        <label class="btn tender-file-btn">
-          📁 <span>Файл</span>
-          <input id="tenders-file-input" type="file" name="file" required />
-        </label>
-        <button class="btn primary" type="submit">Создать и загрузить</button>
-      </form>
-      <div class="tender-file-name" id="tenders-file-name">Файл не выбран</div>
-    </div>
-  </div>
+<style>
+  /* Стили для модального окна */
+  .modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(30, 27, 75, 0.4);
+    backdrop-filter: blur(4px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+    opacity: 1;
+    transition: opacity 0.2s;
+  }
+  .modal-overlay.hidden {
+    display: none !important;
+    opacity: 0;
+  }
+</style>
 
+<div id="tenders-demo">
   <div id="tenders-view-list">
+    <div class="card">
+      <div class="cardHeader">
+        <div>
+          <h2>Тендеры</h2>
+          <div class="sub">Создавайте тендеры и загружайте Excel/CSV для сравнения.</div>
+        </div>
+        <div class="right">
+          <button class="btn primary" id="btnAddTender">+ Создать тендер</button>
+        </div>
+      </div>
+    </div>
+
     <div class="tableWrap">
       <table>
         <thead>
@@ -105,6 +119,26 @@
     </div>
   </div>
 
+  <!-- Modal -->
+  <div id="tenders-modal" class="modal-overlay hidden">
+    <div class="card" style="width:100%; max-width:420px; margin:0 20px; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.25);">
+      <h3 id="tenders-modal-title">Создать тендер</h3>
+      <form id="tenders-upload-form" enctype="multipart/form-data">
+        <div style="margin-top:16px;">
+          <input class="input" id="tenders-title-input" type="text" name="title" placeholder="Название тендера" required>
+        </div>
+        <div style="margin-top:12px;">
+          <input class="input" id="tenders-file-input" type="file" name="file" required>
+          <div class="tender-file-name" id="tenders-file-name">Файл не выбран</div>
+        </div>
+        <div style="margin-top:24px; display:flex; justify-content:flex-end; gap:12px;">
+          <button class="btn" type="button" id="tenders-modal-cancel">Отмена</button>
+          <button class="btn primary" type="submit" id="tenders-modal-submit">Создать и загрузить</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
   <!-- Модалка подбора позиции у конкретного поставщика -->
   <div class="tender-modal hidden" id="tenders-match-modal">
     <div class="tender-modal-body">
@@ -140,11 +174,7 @@
 
 <style>
   #tenders-demo .hidden { display:none !important; }
-  #tenders-demo .tender-form { display:flex; gap:10px; align-items:center; flex-wrap:wrap; justify-content:flex-end; }
-  #tenders-demo .tender-file-btn { position: relative; overflow: hidden; }
-  #tenders-demo .tender-file-btn input[type="file"] { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
-  #tenders-demo .tender-file-name { font-size: 12px; color: #64748b; margin-top: 8px; text-align: right; }
-  #tenders-demo .tender-actions-row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  #tenders-demo .tender-file-name { font-size: 12px; color: #64748b; margin-top: 6px; }
   #tenders-demo .tender-topbar { display:flex; gap:14px; align-items:flex-start; justify-content:space-between; flex-wrap:wrap; }
   #tenders-demo .tender-title { flex: 1 1 auto; min-width: 240px; }
   #tenders-demo .h2 { font-size: 20px; font-weight: 800; }
@@ -205,8 +235,6 @@
   #tenders-demo .input-unit { width: 90px; }
 
   @media (max-width: 880px){
-    #tenders-demo .tender-form { width: 100%; justify-content:flex-end; }
-    #tenders-demo .tender-file-name { text-align: left; }
     #tenders-demo .tender-dropdown { position: static; width: 100%; box-shadow: none; margin-top: 10px; }
     #tenders-demo .suppliersList { grid-template-columns: 1fr; }
   }
