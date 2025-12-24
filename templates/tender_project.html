@@ -5,18 +5,13 @@
   <div class="cardHeader">
     <div>
       <h2>Тендеры</h2>
-      <div class="sub">Создавайте тендеры и загружайте Excel/CSV для сравнения.</div>
+      <div class="sub">Создавайте тендеры и загружайте списки для сравнения.</div>
     </div>
     <div class="right">
       <form class="tender-form" id="tenders-upload-form" enctype="multipart/form-data">
         <input class="input" type="text" name="title" placeholder="Название тендера" required />
-        <label class="btn tender-file-btn">
-          📁 <span>Файл</span>
-          <input id="tenders-file-input" type="file" name="file" required />
-        </label>
-        <button class="btn primary" type="submit">Создать и загрузить</button>
+        <button class="btn primary" type="submit">Создать</button>
       </form>
-      <div class="tender-file-name" id="tenders-file-name">Файл не выбран</div>
     </div>
   </div>
 
@@ -149,9 +144,9 @@
 <style>
   #tenders-demo .hidden { display:none !important; }
   #tenders-demo .tender-form { display:flex; gap:10px; align-items:center; flex-wrap:wrap; justify-content:flex-end; }
-  #tenders-demo .tender-file-btn { position: relative; overflow: hidden; }
-  #tenders-demo .tender-file-btn input[type="file"] { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
-  #tenders-demo .tender-file-name { font-size: 12px; color: #64748b; margin-top: 8px; text-align: right; }
+  #tenders-demo .tender-actions-row { display:flex; gap:8px; }
+  #tenders-demo .tender-upload-btn { position: relative; overflow: hidden; }
+  #tenders-demo .tender-upload-btn input[type="file"] { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
   #tenders-demo .tender-actions-row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
   #tenders-demo .tender-topbar { display:flex; gap:14px; align-items:flex-start; justify-content:space-between; flex-wrap:wrap; }
   #tenders-demo .tender-title { flex: 1 1 auto; min-width: 240px; }
