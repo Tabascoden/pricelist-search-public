@@ -304,7 +304,7 @@
     $$("button[data-pick]", body).forEach(btn => {
       btn.onclick = async () => {
         const supplierItemId = Number(btn.getAttribute("data-supplier-item-id"));
-        await pickToCart(state.matchModal.itemId, supplierItemId);
+        await pickForTable(state.matchModal.itemId, supplierItemId);
         closeMatchModal();
       };
     });
@@ -321,7 +321,26 @@
       body: JSON.stringify({
         tender_item_id: itemId,
         supplier_item_id: supplierItemId,
-        project_id: pid
+        project_id: pid,
+        add_to_cart: true
+      }),
+    });
+
+    await reloadProjectHard();
+  }
+
+  async function pickForTable(itemId, supplierItemId) {
+    const pid = state.project?.id;
+    if (!pid) return;
+
+    await apiJson(`/api/tenders/items/${itemId}/select`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        tender_item_id: itemId,
+        supplier_item_id: supplierItemId,
+        project_id: pid,
+        add_to_cart: false
       }),
     });
 
@@ -490,7 +509,13 @@
       }
 
       const selectedOfferId = it.selected_offer_id ? Number(it.selected_offer_id) : null;
-      const selectedOffer = selectedOfferId ? (it.offers || []).find(o => Number(o.id) === selectedOfferId) : null;
+      let selectedOffer = selectedOfferId ? (it.offers || []).find(o => Number(o.id) === selectedOfferId) : null;
+      if (!selectedOffer) {
+        selectedOffer = (it.offers || []).find(o => o.offer_type === "selected") || null;
+      }
+      if (!selectedOffer) {
+        selectedOffer = (it.offers || []).find(o => o.offer_type === "final") || null;
+      }
       const pickedSupplierId = selectedOffer?.supplier_id != null ? Number(selectedOffer.supplier_id) : null;
 
       const rowCells = supplierIds.map(sid => {
