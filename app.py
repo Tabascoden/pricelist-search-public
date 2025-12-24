@@ -2,11 +2,13 @@
 # -*- coding: utf-8 -*-
 
 import csv
+import hashlib
 import json
 import math
 import os
 import re
 import shutil
+import sys
 from datetime import datetime
 from decimal import Decimal
 from io import BytesIO
@@ -30,6 +32,7 @@ except Exception:
 
 
 APP_TITLE = os.getenv("APP_TITLE", "iirest")
+MIGRATION_CLI = "--migrate" in sys.argv
 
 
 def create_app() -> Flask:
@@ -45,6 +48,19 @@ def create_app() -> Flask:
     TENDERS_UPLOAD_DIR = os.path.join(UPLOAD_DIR, "tenders")
     os.makedirs(UPLOAD_DIR, exist_ok=True)
     os.makedirs(TENDERS_UPLOAD_DIR, exist_ok=True)
+
+    def _env_bool(name: str, default: bool = False) -> bool:
+        val = os.getenv(name)
+        if val is None:
+            return default
+        return val.strip().lower() in {"1", "true", "yes", "on"}
+
+    RUN_MIGRATIONS_ONLY = _env_bool("RUN_MIGRATIONS", False) or MIGRATION_CLI
+    AUTO_MIGRATE = _env_bool("AUTO_MIGRATE", False)
+    MIGRATIONS_DIR = os.getenv("MIGRATIONS_DIR", os.path.join(BASE_DIR, "db", "migrations"))
+    MIGRATION_TABLE = os.getenv("MIGRATION_TABLE", "public.schema_migrations")
+    MIGRATION_LOCK_KEY = int(os.getenv("MIGRATION_LOCK_KEY", "424242"))
+    MIGRATION_STATEMENT_TIMEOUT_MS = int(os.getenv("MIGRATION_STATEMENT_TIMEOUT_MS", "0"))
 
     def db_connect():
         return psycopg2.connect(
@@ -87,221 +103,133 @@ def create_app() -> Flask:
         except Exception:
             pass
 
-    def run_migrations():
-        if os.getenv("AUTO_MIGRATE") != "1":
-            return
-
-        migrations_dir = Path(BASE_DIR) / "db" / "migrations"
-        if not migrations_dir.is_dir():
-            app.logger.info("Migrations dir not found, skipping auto-migrate")
-            return
-
-        lock_key = 726332019
-        try:
-            with db_connect() as conn:
-                conn.autocommit = False
-                with conn.cursor() as cur:
-                    cur.execute(
-                        """
-                        CREATE TABLE IF NOT EXISTS schema_migrations(
-                          filename text PRIMARY KEY,
-                          applied_at timestamptz DEFAULT now()
-                        );
-                        """
-                    )
-                    cur.execute("SELECT pg_advisory_lock(%s);", (lock_key,))
-
-                try:
-                    with conn.cursor() as cur:
-                        cur.execute("SELECT filename FROM schema_migrations;")
-                        applied = {row[0] for row in cur.fetchall()}
-
-                    for path in sorted(migrations_dir.glob("*.sql"), key=lambda p: p.name):
-                        fname = path.name
-                        if fname in applied:
-                            app.logger.info("Migration %s already applied, skipping", fname)
-                            continue
-
-                        sql = path.read_text(encoding="utf-8")
-                        try:
-                            with conn.cursor() as cur:
-                                cur.execute(sql)
-                                cur.execute(
-                                    "INSERT INTO schema_migrations(filename) VALUES (%s);",
-                                    (fname,),
-                                )
-                            conn.commit()
-                            app.logger.info("Applied migration %s", fname)
-                        except Exception:
-                            conn.rollback()
-                            app.logger.exception("Failed to apply migration %s", fname)
-                            raise
-                finally:
-                    with conn.cursor() as cur:
-                        cur.execute("SELECT pg_advisory_unlock(%s);", (lock_key,))
-                    conn.commit()
-        except Exception:
-            app.logger.exception("Auto-migrate failed")
-
-    def ensure_schema(conn):
-        run_migrations()
+    def ensure_schema_migrations(conn) -> None:
         with conn.cursor() as cur:
             cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS supplier_uploads (
-                  supplier_id integer PRIMARY KEY,
-                  last_uploaded_at timestamptz NOT NULL,
-                  last_filename text,
-                  storage_path text
+                f"""
+                CREATE TABLE IF NOT EXISTS {MIGRATION_TABLE} (
+                  filename   text PRIMARY KEY,
+                  applied_at timestamptz NOT NULL DEFAULT now(),
+                  checksum   text NULL
                 );
                 """
             )
-            # доп. колонки (безопасно)
-            cur.execute("ALTER TABLE supplier_uploads ADD COLUMN IF NOT EXISTS last_sheet_mode text;")
-            cur.execute("ALTER TABLE supplier_uploads ADD COLUMN IF NOT EXISTS last_sheets text;")
+            cur.execute(f"ALTER TABLE {MIGRATION_TABLE} ADD COLUMN IF NOT EXISTS checksum text;")
         conn.commit()
+
+    def list_migration_files() -> List[str]:
+        migrations_path = Path(MIGRATIONS_DIR)
+        if not migrations_path.is_absolute():
+            migrations_path = Path(BASE_DIR) / migrations_path
+        if not migrations_path.is_dir():
+            app.logger.info("Migrations dir not found, skipping auto-migrate")
+            return []
+        return sorted([path.name for path in migrations_path.glob("*.sql")])
+
+    def get_applied_migrations(conn) -> Dict[str, Optional[str]]:
+        with conn.cursor() as cur:
+            cur.execute(f"SELECT filename, checksum FROM {MIGRATION_TABLE};")
+            return {row[0]: row[1] for row in cur.fetchall()}
+
+    def apply_migration(conn, filename: str, sql_text: str, checksum: str, no_tx: bool) -> None:
+        original_autocommit = conn.autocommit
+        try:
+            if no_tx:
+                conn.autocommit = True
+                with conn.cursor() as cur:
+                    cur.execute(sql_text)
+                conn.autocommit = False
+            else:
+                with conn.cursor() as cur:
+                    cur.execute(sql_text)
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    INSERT INTO {MIGRATION_TABLE}(filename, checksum)
+                    VALUES (%s, %s)
+                    ON CONFLICT (filename) DO NOTHING;
+                    """,
+                    (filename, checksum),
+                )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.autocommit = original_autocommit
+
+    def run_migrations(conn) -> None:
+        ensure_schema_migrations(conn)
+        timeout_ms = MIGRATION_STATEMENT_TIMEOUT_MS
+        if timeout_ms and timeout_ms < 12000:
+            timeout_ms = 12000
+        with conn.cursor() as cur:
+            if timeout_ms > 0:
+                cur.execute("SET statement_timeout = %s;", (f"{timeout_ms}ms",))
+            else:
+                cur.execute("SET statement_timeout = 0;")
+        with conn.cursor() as cur:
+            cur.execute("SELECT pg_advisory_lock(%s);", (MIGRATION_LOCK_KEY,))
+        try:
+            applied = get_applied_migrations(conn)
+            migrations_path = Path(MIGRATIONS_DIR)
+            if not migrations_path.is_absolute():
+                migrations_path = Path(BASE_DIR) / migrations_path
+            if not migrations_path.is_dir():
+                app.logger.info("Migrations dir not found, skipping auto-migrate")
+                return
+            migration_files = list_migration_files()
+
+            for fname, stored_checksum in applied.items():
+                path = migrations_path / fname
+                if not path.exists():
+                    app.logger.error("Applied migration missing on disk: %s", fname)
+                    raise RuntimeError(f"Migration file missing: {fname}")
+                sql_text = path.read_text(encoding="utf-8")
+                current_checksum = hashlib.sha256(sql_text.encode("utf-8")).hexdigest()
+                if stored_checksum is None:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            f"UPDATE {MIGRATION_TABLE} SET checksum = %s WHERE filename = %s;",
+                            (current_checksum, fname),
+                        )
+                    conn.commit()
+                elif stored_checksum != current_checksum:
+                    app.logger.error(
+                        "Migration checksum mismatch for %s (db=%s, disk=%s)",
+                        fname,
+                        stored_checksum,
+                        current_checksum,
+                    )
+                    raise RuntimeError(f"Migration checksum mismatch: {fname}")
+
+            pending = [fname for fname in migration_files if fname not in applied]
+            app.logger.info("Pending migrations: %s", pending)
+
+            if not pending:
+                app.logger.info("No migrations to apply")
+                return
+
+            for fname in pending:
+                path = migrations_path / fname
+                sql_text = path.read_text(encoding="utf-8")
+                lines = sql_text.splitlines()
+                no_tx = bool(lines and lines[0].strip().upper() == "-- NO_TX")
+                checksum = hashlib.sha256(sql_text.encode("utf-8")).hexdigest()
+                apply_migration(conn, fname, sql_text, checksum, no_tx)
+                app.logger.info("Applied migration %s", fname)
+            app.logger.info("Applied %d migrations", len(pending))
+        finally:
+            with conn.cursor() as cur:
+                cur.execute("SELECT pg_advisory_unlock(%s);", (MIGRATION_LOCK_KEY,))
+            conn.commit()
+
+    def ensure_schema(conn):
+        return
 
     def ensure_schema_compare(conn):
         ensure_schema(conn)
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                CREATE EXTENSION IF NOT EXISTS pg_trgm;
-
-                CREATE TABLE IF NOT EXISTS categories (
-                  id serial PRIMARY KEY,
-                  name text,
-                  code text UNIQUE,
-                  parent_id int REFERENCES categories(id)
-                );
-
-                CREATE TABLE IF NOT EXISTS category_rules (
-                  id serial PRIMARY KEY,
-                  category_id int REFERENCES categories(id),
-                  pattern text
-                );
-
-                CREATE TABLE IF NOT EXISTS tender_projects (
-                  id serial PRIMARY KEY,
-                  title text,
-                  created_at timestamptz DEFAULT now()
-                );
-
-                CREATE TABLE IF NOT EXISTS tender_items (
-                  id serial PRIMARY KEY,
-                  project_id int REFERENCES tender_projects(id) ON DELETE CASCADE,
-                  row_no int,
-                  name_input text,
-                  qty numeric(12,3),
-                  unit_input text,
-                  category_id int REFERENCES categories(id),
-                  selected_offer_id int
-                );
-
-                CREATE TABLE IF NOT EXISTS tender_offers (
-                  id serial PRIMARY KEY,
-                  tender_item_id int REFERENCES tender_items(id) ON DELETE CASCADE,
-                  offer_type text,
-                  supplier_id int REFERENCES suppliers(id),
-                  supplier_item_id int REFERENCES supplier_items(id),
-                  supplier_name text,
-                  name_raw text,
-                  unit text,
-                  price numeric(12,4),
-                  base_unit text,
-                  base_qty numeric(12,6),
-                  price_per_unit numeric(12,4),
-                  category_id int REFERENCES categories(id),
-                  created_at timestamptz DEFAULT now()
-                );
-                """
-            )
-
-            cur.execute("ALTER TABLE tender_offers ADD COLUMN IF NOT EXISTS score numeric;")
-            cur.execute(
-                """
-                DO $$
-                BEGIN
-                  IF to_regclass('public.tender_items') IS NOT NULL
-                     AND to_regclass('public.tender_offers') IS NOT NULL THEN
-                    IF NOT EXISTS (
-                      SELECT 1 FROM pg_constraint WHERE conname = 'tender_items_selected_offer_id_fkey'
-                    ) THEN
-                      ALTER TABLE tender_items
-                        ADD CONSTRAINT tender_items_selected_offer_id_fkey
-                        FOREIGN KEY (selected_offer_id) REFERENCES tender_offers(id)
-                        ON DELETE SET NULL;
-                    END IF;
-                  END IF;
-                END$$;
-                """
-            )
-            cur.execute(
-                """
-                DO $$
-                BEGIN
-                  IF to_regclass('public.tender_offers') IS NOT NULL THEN
-                    ALTER TABLE tender_offers DROP CONSTRAINT IF EXISTS tender_offers_supplier_id_fkey;
-                    ALTER TABLE tender_offers DROP CONSTRAINT IF EXISTS tender_offers_supplier_item_id_fkey;
-                    ALTER TABLE tender_offers DROP CONSTRAINT IF EXISTS tender_offers_category_id_fkey;
-
-                    IF NOT EXISTS (
-                      SELECT 1 FROM pg_constraint WHERE conname = 'tender_offers_supplier_id_fkey'
-                    ) THEN
-                      ALTER TABLE tender_offers
-                        ADD CONSTRAINT tender_offers_supplier_id_fkey
-                        FOREIGN KEY (supplier_id) REFERENCES suppliers(id)
-                        ON DELETE SET NULL;
-                    END IF;
-                    IF NOT EXISTS (
-                      SELECT 1 FROM pg_constraint WHERE conname = 'tender_offers_supplier_item_id_fkey'
-                    ) THEN
-                      ALTER TABLE tender_offers
-                        ADD CONSTRAINT tender_offers_supplier_item_id_fkey
-                        FOREIGN KEY (supplier_item_id) REFERENCES supplier_items(id)
-                        ON DELETE SET NULL;
-                    END IF;
-                    IF NOT EXISTS (
-                      SELECT 1 FROM pg_constraint WHERE conname = 'tender_offers_category_id_fkey'
-                    ) THEN
-                      ALTER TABLE tender_offers
-                        ADD CONSTRAINT tender_offers_category_id_fkey
-                        FOREIGN KEY (category_id) REFERENCES categories(id)
-                        ON DELETE SET NULL;
-                    END IF;
-                  END IF;
-                END$$;
-                """
-            )
-
-            cur.execute("ALTER TABLE supplier_items ADD COLUMN IF NOT EXISTS name_normalized text;")
-            cur.execute("ALTER TABLE supplier_items ADD COLUMN IF NOT EXISTS base_unit text;")
-            cur.execute("ALTER TABLE supplier_items ADD COLUMN IF NOT EXISTS base_qty numeric(12,6);")
-            cur.execute("ALTER TABLE supplier_items ADD COLUMN IF NOT EXISTS price_per_unit numeric(12,4);")
-            cur.execute(
-                "ALTER TABLE supplier_items ADD COLUMN IF NOT EXISTS category_id int REFERENCES categories(id);"
-            )
-            cur.execute("ALTER TABLE supplier_items ADD COLUMN IF NOT EXISTS category_path text;")
-
-            cur.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_supplier_items_name_norm_trgm
-                  ON supplier_items USING gin (coalesce(name_normalized, name_raw) gin_trgm_ops);
-                """
-            )
-
-            cur.execute(
-                """
-                INSERT INTO categories(name, code)
-                SELECT * FROM (VALUES
-                    ('Свежие продукты', 'fresh'),
-                    ('Консервы/маринады', 'canned'),
-                    ('Заморозка', 'frozen')
-                ) AS s(name, code)
-                WHERE NOT EXISTS (SELECT 1 FROM categories WHERE code = s.code);
-                """
-            )
-        conn.commit()
+        return
 
     def get_category_map(conn) -> Dict[str, int]:
         ensure_schema_compare(conn)
@@ -332,13 +260,12 @@ def create_app() -> Flask:
         return v if v in ("fresh", "canned", "frozen") else None
 
     # пробуем подготовить схему на старте
-    try:
-        run_migrations()
-        with db_connect() as conn:
-            ensure_schema(conn)
-            ensure_schema_compare(conn)
-    except Exception:
-        pass
+    if AUTO_MIGRATE and not RUN_MIGRATIONS_ONLY:
+        try:
+            with db_connect() as conn:
+                run_migrations(conn)
+        except Exception:
+            app.logger.exception("Auto-migrate failed")
 
     # ---------------- Pages ----------------
     @app.route("/", methods=["GET"])
@@ -2065,10 +1992,21 @@ def create_app() -> Flask:
             return jsonify({"error": "not found"}), 404
         return render_template("search.html", title=APP_TITLE, active="search"), 200
 
+    app.db_connect = db_connect
+    app.run_migrations = run_migrations
     return app
 
 
-app = create_app()
-
 if __name__ == "__main__":
+    app = create_app()
+    if MIGRATION_CLI or os.getenv("RUN_MIGRATIONS", "").strip().lower() in {"1", "true", "yes", "on"}:
+        try:
+            with app.db_connect() as conn:
+                app.run_migrations(conn)
+        except Exception:
+            app.logger.exception("Migration run failed")
+            sys.exit(1)
+        sys.exit(0)
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "5000")), debug=False)
+else:
+    app = create_app()
