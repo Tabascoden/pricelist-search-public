@@ -1,7 +1,7 @@
 // static/tenders.js
 (() => {
   const ROOT_ID = "tenders-demo";
-  const LS_KEY = "tendersDemoStateV3";
+  const LS_KEY = "tendersDemoStateV4";
   const MIN_SCORE = 0.3;
 
   const $ = (sel, root = document) => root.querySelector(sel);
@@ -34,9 +34,12 @@
     const st = document.createElement("style");
     st.id = "tenders-ux-styles";
     st.textContent = `
-      /* UX additions for supplier comparison */
-      #tenders-demo .tender-grid { overflow:auto; }
-      #tenders-demo .tender-grid table { min-width: 980px; }
+      /* Horizontal scroll for many suppliers */
+      #tenders-demo .tender-grid { overflow-x:auto; overflow-y:hidden; }
+      #tenders-demo .tender-grid table {
+        width: max-content;
+        min-width: 100%;
+      }
 
       #tenders-demo .supplierTh { width: 260px; }
       #tenders-demo .supplierCell {
@@ -63,6 +66,7 @@
       #tenders-demo .iconBtn:hover { background:#f8fafc; }
       #tenders-demo .iconBtn:disabled { opacity: .45; cursor: not-allowed; }
 
+      /* Smart highlights */
       #tenders-demo .supplierCell.picked {
         background: #ecfdf5;
         box-shadow: inset 0 0 0 2px #10b981;
@@ -72,6 +76,7 @@
         box-shadow: inset 0 0 0 2px #38bdf8;
       }
 
+      /* Cart */
       #tenders-demo .cartBox {
         margin: 14px 0;
         padding: 12px;
@@ -79,9 +84,10 @@
         border-radius: 14px;
         background: #ffffff;
       }
-      #tenders-demo .cartTop { display:flex; gap:12px; align-items:center; justify-content:space-between; flex-wrap:wrap; }
+      #tenders-demo .cartTop { display:flex; gap:12px; align-items:flex-start; justify-content:space-between; flex-wrap:wrap; }
       #tenders-demo .cartTitle { font-weight: 900; }
       #tenders-demo .cartSub { color:#64748b; font-size: 13px; }
+      #tenders-demo .cartActions { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
       #tenders-demo .cartTable { width:100%; border-collapse: collapse; margin-top: 10px; }
       #tenders-demo .cartTable th, #tenders-demo .cartTable td {
         padding: 8px 10px;
@@ -92,6 +98,23 @@
       }
       #tenders-demo .cartTable th { background:#f8fafc; font-size: 12px; text-transform: uppercase; color:#475569; }
 
+      /* Supplier totals mini-block */
+      #tenders-demo .totalsGrid {
+        margin-top: 10px;
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        overflow: hidden;
+      }
+      #tenders-demo .totalsGrid table { width:100%; border-collapse: collapse; }
+      #tenders-demo .totalsGrid th, #tenders-demo .totalsGrid td {
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--border);
+        font-size: 13px;
+        text-align:left;
+      }
+      #tenders-demo .totalsGrid th { background:#f8fafc; font-size: 12px; text-transform: uppercase; color:#475569; }
+
+      /* Suppliers modal */
       #tenders-demo .suppliersList {
         display:grid;
         grid-template-columns: 1fr 1fr;
@@ -107,6 +130,28 @@
       }
       #tenders-demo .suppliersItem input { transform: translateY(1px); }
       #tenders-demo .suppliersActions { display:flex; gap:10px; justify-content:flex-end; margin-top: 12px; }
+
+      /* Orders modal blocks */
+      #tenders-demo .orderBlock {
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        overflow: hidden;
+        margin-top: 12px;
+        background: #fff;
+      }
+      #tenders-demo .orderHead {
+        display:flex;
+        align-items:flex-start;
+        justify-content:space-between;
+        gap: 12px;
+        padding: 12px;
+        background: #fbfcff;
+        border-bottom: 1px solid var(--border);
+        flex-wrap: wrap;
+      }
+      #tenders-demo .orderTitle { font-weight: 900; }
+      #tenders-demo .orderMeta { color:#64748b; font-size: 13px; margin-top: 2px; }
+      #tenders-demo .orderBtns { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
 
       @media (max-width: 900px) {
         #tenders-demo .suppliersList { grid-template-columns: 1fr; }
@@ -165,14 +210,7 @@
         const price = Math.round((80 + Math.random() * 160) * 100) / 100;
         const ppu = Math.round((price / (0.8 + Math.random() * 1.6)) * 100) / 100;
         const score = Math.round((0.15 + Math.random() * 0.55) * 100) / 100;
-        return {
-          id: offerId++,
-          supplier,
-          name: name + (Math.random() > 0.7 ? ` (${hint})` : ""),
-          price,
-          ppu,
-          score
-        };
+        return { id: offerId++, supplier, name: name + (Math.random() > 0.7 ? ` (${hint})` : ""), price, ppu, score };
       });
     };
 
@@ -190,7 +228,6 @@
       name,
       qty,
       unit,
-      // UI-only fields:
       compareOffers: {}, // supplier -> offerId|null
       picked: null,      // { supplier, offerId } | null
       offers: makeOffers(name)
@@ -259,12 +296,10 @@
     for (const p of st.projects) {
       p.items = Array.isArray(p.items) ? p.items : [];
 
-      // selected suppliers
       const allSuppliers = listAllSuppliers(p);
       if (!Array.isArray(p.selectedSuppliers) || !p.selectedSuppliers.length) {
         p.selectedSuppliers = allSuppliers.slice(0, 3);
       } else {
-        // drop suppliers not present anymore
         p.selectedSuppliers = p.selectedSuppliers.filter((s) => allSuppliers.includes(s));
         if (!p.selectedSuppliers.length) p.selectedSuppliers = allSuppliers.slice(0, 3);
       }
@@ -273,21 +308,16 @@
         if (!it.compareOffers || typeof it.compareOffers !== "object") it.compareOffers = {};
         if (typeof it.picked !== "object") it.picked = null;
 
-        // ensure compare offer entries exist for selected suppliers
         for (const s of p.selectedSuppliers) {
-          if (!(s in it.compareOffers)) {
-            it.compareOffers[s] = autoPickOfferId(it, s);
-          }
+          if (!(s in it.compareOffers)) it.compareOffers[s] = autoPickOfferId(it, s);
         }
 
-        // validate compare offers (score threshold)
         for (const [sup, oid] of Object.entries(it.compareOffers)) {
           if (!oid) continue;
           const off = getOffer(it, oid);
           if (!off || Number(off.score) < MIN_SCORE) it.compareOffers[sup] = null;
         }
 
-        // validate picked
         if (it.picked && it.picked.offerId) {
           const off = getOffer(it, it.picked.offerId);
           if (!off || Number(off.score) < MIN_SCORE) it.picked = null;
@@ -304,7 +334,6 @@
     const listWrap = $("#tender-projects", root);
     const form = $("#tender-create-form", root);
     const input = $("#tender-title", root);
-
     if (!listWrap || !form) return;
 
     const projects = [...state.projects].sort((a, b) => b.id - a.id);
@@ -342,11 +371,7 @@
       `;
     }
 
-    html += `
-          </tbody>
-        </table>
-      </div>
-    `;
+    html += `</tbody></table></div>`;
     listWrap.innerHTML = html;
 
     $$('button[data-action="open"]', listWrap).forEach((btn) => {
@@ -427,13 +452,10 @@
     if (uploadBtn) uploadBtn.onclick = () => alert("Демо: загрузка XLSX будет подключена позже.");
     if (exportBtn) exportBtn.onclick = () => exportCSV(project);
 
-    if (suppliersBtn) {
-      suppliersBtn.onclick = () => openSuppliersModal(project.id);
-    }
+    if (suppliersBtn) suppliersBtn.onclick = () => openSuppliersModal(project.id);
 
     if (autopickBtn) {
       autopickBtn.onclick = () => {
-        // Автоподбор: заполняем ячейки и выбираем минимум по цене/ед среди выбранных поставщиков
         for (const it of project.items) {
           for (const s of project.selectedSuppliers) {
             if (!(s in it.compareOffers)) it.compareOffers[s] = autoPickOfferId(it, s);
@@ -457,6 +479,73 @@
     renderProjectView();
   }
 
+  function buildCart(project) {
+    const rows = [...project.items].sort((a, b) => (a.rowNo ?? 0) - (b.rowNo ?? 0));
+
+    const pickedRows = rows
+      .map((it) => {
+        if (!it.picked) return null;
+        const off = getOffer(it, it.picked.offerId);
+        if (!off) return null;
+        const qty = Number(it.qty) || 0;
+        const ppu = Number(off.ppu) || 0;
+        const amount = qty * ppu;
+        return { it, off, qty, ppu, amount };
+      })
+      .filter(Boolean);
+
+    const bySupplier = new Map();
+    for (const x of pickedRows) {
+      const key = x.off.supplier;
+      if (!bySupplier.has(key)) bySupplier.set(key, { supplier: key, lines: [], total: 0 });
+      const bucket = bySupplier.get(key);
+      bucket.lines.push(x);
+      bucket.total += x.amount || 0;
+    }
+
+    const total = pickedRows.reduce((s, x) => s + (x.amount || 0), 0);
+
+    return { pickedRows, bySupplier, total };
+  }
+
+  function renderSupplierTotals(bySupplier, total) {
+    const suppliers = Array.from(bySupplier.values());
+    if (suppliers.length <= 1) return "";
+
+    return `
+      <div class="totalsGrid">
+        <table>
+          <thead>
+            <tr>
+              <th>Поставщик</th>
+              <th style="width:120px;">Позиций</th>
+              <th style="width:140px;">Итого</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${suppliers
+              .sort((a, b) => b.total - a.total)
+              .map(
+                (s) => `
+                  <tr>
+                    <td><b>${esc(s.supplier)}</b></td>
+                    <td>${esc(s.lines.length)}</td>
+                    <td><b>${fmtNum(s.total)} ₽</b></td>
+                  </tr>
+                `
+              )
+              .join("")}
+            <tr>
+              <td><b>ИТОГО</b></td>
+              <td>${esc(suppliers.reduce((n, s) => n + s.lines.length, 0))}</td>
+              <td><b>${fmtNum(total)} ₽</b></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    `;
+  }
+
   function renderProjectView() {
     const root = document.getElementById(ROOT_ID);
     if (!root) return;
@@ -473,25 +562,13 @@
       return;
     }
 
-    // normalize project each render (in case suppliers changed)
     state = normalizeState(state);
     saveState(state);
 
     const suppliers = project.selectedSuppliers || [];
     const rows = [...project.items].sort((a, b) => (a.rowNo ?? 0) - (b.rowNo ?? 0));
 
-    // cart summary
-    const pickedRows = rows
-      .map((it) => {
-        if (!it.picked) return null;
-        const off = getOffer(it, it.picked.offerId);
-        if (!off) return null;
-        const amount = (Number(it.qty) || 0) * (Number(off.ppu) || 0);
-        return { it, off, amount };
-      })
-      .filter(Boolean);
-
-    const total = pickedRows.reduce((s, x) => s + (x.amount || 0), 0);
+    const { pickedRows, bySupplier, total } = buildCart(project);
 
     const cartHtml = `
       <div class="cartBox">
@@ -502,9 +579,14 @@
               Позиции: <b>${pickedRows.length}</b>
               · Итого: <b>${fmtNum(total)} ₽</b>
             </div>
+            <div class="cartSub">★ — выбрать поставщика для строки (ячейка зелёная). Голубая — минимальная цена по строке (если не выбрана).</div>
           </div>
-          <div class="cartSub">Нажмите ★ в ячейке поставщика, чтобы добавить строку в корзину (зелёная подсветка).</div>
+
+          <div class="cartActions">
+            <button class="btn primary" id="tender-build-orders" ${pickedRows.length ? "" : "disabled"}>Собрать заказ(ы)</button>
+          </div>
         </div>
+
         ${
           pickedRows.length
             ? `
@@ -513,6 +595,7 @@
                   <tr>
                     <th style="width:60px;">№</th>
                     <th>Позиция</th>
+                    <th style="width:120px;">Кол-во</th>
                     <th style="width:160px;">Поставщик</th>
                     <th>Товар</th>
                     <th style="width:110px;">Цена/ед</th>
@@ -523,14 +606,15 @@
                 <tbody>
                   ${pickedRows
                     .map(
-                      ({ it, off, amount }) => `
+                      ({ it, off, qty, amount }) => `
                         <tr>
                           <td>${esc(it.rowNo)}</td>
                           <td>${esc(it.name)}</td>
+                          <td><b>${fmtNum(qty, 3)}</b> ${esc(it.unit || "")}</td>
                           <td><b>${esc(off.supplier)}</b></td>
                           <td>${esc(off.name)}</td>
-                          <td><b>${fmtNum(off.ppu)}</b></td>
-                          <td><b>${fmtNum(amount)}</b></td>
+                          <td><b>${fmtNum(off.ppu)} ₽</b></td>
+                          <td><b>${fmtNum(amount)} ₽</b></td>
                           <td>
                             <button class="btn" data-action="cart-remove" data-item="${it.id}" title="Убрать из корзины">✕</button>
                           </td>
@@ -540,6 +624,8 @@
                     .join("")}
                 </tbody>
               </table>
+
+              ${renderSupplierTotals(bySupplier, total)}
             `
             : `<div class="sub" style="margin-top:10px;">Корзина пустая — выберите позиции, нажав ★.</div>`
         }
@@ -553,7 +639,7 @@
           <thead>
             <tr>
               <th style="width:50px;">№</th>
-              <th>Позиция закупки</th>
+              <th style="min-width:260px;">Позиция закупки</th>
               <th style="width:90px;">Кол-во</th>
               <th style="width:70px;">Ед.</th>
               ${suppliers.map((s) => `<th class="supplierTh">${esc(s)}</th>`).join("")}
@@ -564,7 +650,7 @@
     `;
 
     for (const it of rows) {
-      // compute best ppu among visible offers to highlight
+      // visible offers in selected suppliers (score >= MIN_SCORE)
       const visible = suppliers
         .map((s) => {
           const oid = it.compareOffers?.[s] ?? null;
@@ -592,21 +678,14 @@
           <td>${esc(fmtNum(it.qty, 3))}</td>
           <td>${esc(it.unit)}</td>
 
-          ${suppliers
-            .map((s) => renderSupplierCell(project, it, s, bestPpu))
-            .join("")}
+          ${suppliers.map((s) => renderSupplierCell(project, it, s, bestPpu)).join("")}
 
           <td>${pickedLabel}</td>
         </tr>
       `;
     }
 
-    html += `
-          </tbody>
-        </table>
-      </div>
-    `;
-
+    html += `</tbody></table></div>`;
     itemsWrap.innerHTML = html;
 
     // bind cart remove
@@ -620,6 +699,12 @@
         renderProjectView();
       };
     });
+
+    // build orders button
+    const buildBtn = $("#tender-build-orders", itemsWrap);
+    if (buildBtn) {
+      buildBtn.onclick = () => openOrdersModal(project.id);
+    }
 
     // bind cell actions
     $$('button[data-action="cell-remove"]', itemsWrap).forEach((btn) => {
@@ -658,12 +743,10 @@
         const off = oid ? getOffer(it, oid) : null;
 
         if (!off) {
-          // нет позиции — предложим выбрать в модалке
           openOfferModal(project.id, itemId, supplier, "cart");
           return;
         }
 
-        // toggle
         const isPicked = it.picked && it.picked.offerId === off.id && it.picked.supplier === supplier;
         it.picked = isPicked ? null : { supplier, offerId: off.id };
         saveState(state);
@@ -682,9 +765,8 @@
 
     const cls = ["supplierCell"];
     if (isPicked) cls.push("picked");
-    else if (isBest) cls.push("best");
+    if (isBest) cls.push("best");
 
-    // If position not found or score too low — do not show the position (only actions)
     const body = valid
       ? `
         <div class="supName">${esc(off.name)}</div>
@@ -717,7 +799,6 @@
     const modal = $("#tender-modal", root);
     if (!modal) return;
 
-    // reset search input
     const q = $("#tender-search-manual", root);
     if (q) q.value = "";
 
@@ -757,15 +838,10 @@
 
     let offers = [...(item.offers || [])];
 
-    // supplier filter (cell-driven UX)
     offers = offers.filter((o) => o.supplier === modalCtx.supplier);
-
-    // score threshold
     offers = offers.filter((o) => Number(o.score) >= MIN_SCORE);
 
-    if (q) {
-      offers = offers.filter((o) => `${o.supplier} ${o.name}`.toLowerCase().includes(q));
-    }
+    if (q) offers = offers.filter((o) => `${o.supplier} ${o.name}`.toLowerCase().includes(q));
 
     offers.sort((a, b) => {
       if ((b.score ?? 0) !== (a.score ?? 0)) return (b.score ?? 0) - (a.score ?? 0);
@@ -843,7 +919,6 @@
 
     modal.classList.remove("hidden");
     modal.setAttribute("aria-hidden", "false");
-
     renderSuppliersModal();
   }
 
@@ -871,9 +946,7 @@
     const allSuppliers = listAllSuppliers(project);
     const selected = new Set(project.selectedSuppliers || []);
 
-    const filtered = q
-      ? allSuppliers.filter((s) => s.toLowerCase().includes(q))
-      : allSuppliers;
+    const filtered = q ? allSuppliers.filter((s) => s.toLowerCase().includes(q)) : allSuppliers;
 
     if (!listEl) return;
 
@@ -889,7 +962,6 @@
       })
       .join("");
 
-    // bind checkboxes
     $$('input[type="checkbox"]', listEl).forEach((cb) => {
       cb.onchange = () => {
         const s = decKey(cb.dataset.supplier || "");
@@ -900,8 +972,6 @@
         project.selectedSuppliers = Array.from(selected);
         state = normalizeState(state);
         saveState(state);
-
-        // re-render list to keep order stable
         renderSuppliersModal();
       };
     });
@@ -914,7 +984,6 @@
     const project = getProject(suppliersModalProjectId);
     if (!project) return;
 
-    // read checked values
     const listEl = $("#tender-suppliers-list", root);
     const checked = $$('input[type="checkbox"]', listEl).filter((x) => x.checked);
     const selected = checked.map((x) => decKey(x.dataset.supplier || "")).filter(Boolean);
@@ -925,6 +994,227 @@
 
     closeSuppliersModal();
     renderProjectView();
+  }
+
+  // --- Orders modal (assemble per supplier) ---
+  let ordersModalProjectId = null;
+
+  function ensureOrdersModalExists() {
+    const root = document.getElementById(ROOT_ID);
+    if (!root) return;
+
+    if ($("#tender-orders-modal", root)) return;
+
+    // If template wasn't updated, inject modal markup dynamically
+    const wrap = document.createElement("div");
+    wrap.innerHTML = `
+      <div class="tender-modal hidden" id="tender-orders-modal" aria-hidden="true">
+        <div class="tender-modal-body" role="dialog" aria-modal="true">
+          <div class="tender-modal-header">
+            <div>
+              <div class="h3">Собранные заказы</div>
+              <div class="sub" id="tender-orders-subtitle">Один заказ на каждого поставщика из корзины.</div>
+            </div>
+            <button class="btn" id="tender-orders-close">Закрыть</button>
+          </div>
+          <div id="tender-orders-body" class="sub">Загрузка…</div>
+        </div>
+      </div>
+    `;
+    root.appendChild(wrap.firstElementChild);
+  }
+
+  function openOrdersModal(projectId) {
+    ensureOrdersModalExists();
+    ordersModalProjectId = projectId;
+
+    const root = document.getElementById(ROOT_ID);
+    const modal = $("#tender-orders-modal", root);
+    if (!modal) return;
+
+    modal.classList.remove("hidden");
+    modal.setAttribute("aria-hidden", "false");
+    renderOrdersModal();
+  }
+
+  function closeOrdersModal() {
+    const root = document.getElementById(ROOT_ID);
+    const modal = $("#tender-orders-modal", root);
+    if (!modal) return;
+
+    modal.classList.add("hidden");
+    modal.setAttribute("aria-hidden", "true");
+    ordersModalProjectId = null;
+  }
+
+  function ordersTextForSupplier(bucket) {
+    const lines = bucket.lines
+      .sort((a, b) => (a.it.rowNo ?? 0) - (b.it.rowNo ?? 0))
+      .map((x) => {
+        const q = `${fmtNum(x.qty, 3)} ${x.it.unit || ""}`.trim();
+        return `${x.it.rowNo}. ${x.it.name} — ${q} — ${x.off.name} — ${fmtNum(x.off.ppu)} ₽/ед — ${fmtNum(x.amount)} ₽`;
+      });
+
+    return [
+      `Поставщик: ${bucket.supplier}`,
+      `Позиций: ${bucket.lines.length}`,
+      `Итого: ${fmtNum(bucket.total)} ₽`,
+      ``,
+      ...lines
+    ].join("\n");
+  }
+
+  function downloadSupplierCSV(project, supplier, bucket) {
+    const header = [
+      "row_no",
+      "purchase_name",
+      "qty",
+      "unit",
+      "supplier_item_name",
+      "price_per_unit",
+      "score",
+      "amount"
+    ];
+
+    const lines = [header.join(",")];
+
+    for (const x of bucket.lines.sort((a, b) => (a.it.rowNo ?? 0) - (b.it.rowNo ?? 0))) {
+      const row = [
+        x.it.rowNo ?? "",
+        `"${String(x.it.name ?? "").replaceAll('"', '""')}"`,
+        x.qty ?? "",
+        `"${String(x.it.unit ?? "").replaceAll('"', '""')}"`,
+        `"${String(x.off.name ?? "").replaceAll('"', '""')}"`,
+        x.off.ppu ?? "",
+        x.off.score ?? "",
+        x.amount ?? ""
+      ];
+      lines.push(row.join(","));
+    }
+
+    const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `tender_${project.id}_order_${supplier.replaceAll(" ", "_")}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+  }
+
+  async function copyToClipboard(text) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      // fallback
+      try {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.position = "fixed";
+        ta.style.left = "-9999px";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        ta.remove();
+        return true;
+      } catch {
+        return false;
+      }
+    }
+  }
+
+  function renderOrdersModal() {
+    const root = document.getElementById(ROOT_ID);
+    if (!root || !ordersModalProjectId) return;
+
+    const project = getProject(ordersModalProjectId);
+    if (!project) return;
+
+    const body = $("#tender-orders-body", root);
+    if (!body) return;
+
+    const { pickedRows, bySupplier, total } = buildCart(project);
+    const suppliers = Array.from(bySupplier.values()).sort((a, b) => b.total - a.total);
+
+    if (!pickedRows.length) {
+      body.innerHTML = `<div class="sub">Корзина пустая — нечего собирать.</div>`;
+      return;
+    }
+
+    body.innerHTML = `
+      <div class="cartSub">Всего: <b>${pickedRows.length}</b> позиций · Итого: <b>${fmtNum(total)} ₽</b></div>
+
+      ${suppliers
+        .map((bucket) => {
+          return `
+            <div class="orderBlock">
+              <div class="orderHead">
+                <div>
+                  <div class="orderTitle">${esc(bucket.supplier)}</div>
+                  <div class="orderMeta">Позиций: <b>${bucket.lines.length}</b> · Итого: <b>${fmtNum(bucket.total)} ₽</b></div>
+                </div>
+                <div class="orderBtns">
+                  <button class="btn" data-action="order-copy" data-supplier="${encKey(bucket.supplier)}">Копировать</button>
+                  <button class="btn primary" data-action="order-csv" data-supplier="${encKey(bucket.supplier)}">Скачать CSV</button>
+                </div>
+              </div>
+
+              <table class="cartTable">
+                <thead>
+                  <tr>
+                    <th style="width:60px;">№</th>
+                    <th>Позиция</th>
+                    <th style="width:120px;">Кол-во</th>
+                    <th>Товар</th>
+                    <th style="width:110px;">Цена/ед</th>
+                    <th style="width:110px;">Сумма</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${bucket.lines
+                    .sort((a, b) => (a.it.rowNo ?? 0) - (b.it.rowNo ?? 0))
+                    .map(
+                      (x) => `
+                        <tr>
+                          <td>${esc(x.it.rowNo)}</td>
+                          <td>${esc(x.it.name)}</td>
+                          <td><b>${fmtNum(x.qty, 3)}</b> ${esc(x.it.unit || "")}</td>
+                          <td>${esc(x.off.name)}</td>
+                          <td><b>${fmtNum(x.off.ppu)} ₽</b></td>
+                          <td><b>${fmtNum(x.amount)} ₽</b></td>
+                        </tr>
+                      `
+                    )
+                    .join("")}
+                </tbody>
+              </table>
+            </div>
+          `;
+        })
+        .join("")}
+    `;
+
+    // bind actions
+    $$('button[data-action="order-copy"]', body).forEach((btn) => {
+      btn.onclick = async () => {
+        const supplier = decKey(btn.dataset.supplier || "");
+        const bucket = suppliers.find((x) => x.supplier === supplier);
+        if (!bucket) return;
+        const ok = await copyToClipboard(ordersTextForSupplier(bucket));
+        alert(ok ? "Скопировано в буфер обмена." : "Не удалось скопировать.");
+      };
+    });
+
+    $$('button[data-action="order-csv"]', body).forEach((btn) => {
+      btn.onclick = () => {
+        const supplier = decKey(btn.dataset.supplier || "");
+        const bucket = suppliers.find((x) => x.supplier === supplier);
+        if (!bucket) return;
+        downloadSupplierCSV(project, supplier, bucket);
+      };
+    });
   }
 
   function exportCSV(project) {
@@ -1011,15 +1301,28 @@
         if (e.target === sModal) closeSuppliersModal();
       });
 
-    // close on ESC (both modals)
+    // orders modal (may be injected later)
+    ensureOrdersModalExists();
+    const oModal = $("#tender-orders-modal", root);
+    const oClose = $("#tender-orders-close", root);
+
+    oClose && (oClose.onclick = closeOrdersModal);
+    oModal &&
+      oModal.addEventListener("click", (e) => {
+        if (e.target === oModal) closeOrdersModal();
+      });
+
+    // close on ESC (all)
     document.addEventListener("keydown", (e) => {
       if (e.key !== "Escape") return;
 
       const offerOpen = modal && !modal.classList.contains("hidden");
       const suppOpen = sModal && !sModal.classList.contains("hidden");
+      const ordOpen = oModal && !oModal.classList.contains("hidden");
 
       if (offerOpen) closeOfferModal();
       else if (suppOpen) closeSuppliersModal();
+      else if (ordOpen) closeOrdersModal();
     });
   }
 
