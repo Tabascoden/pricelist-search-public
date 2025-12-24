@@ -981,13 +981,18 @@
     $("#tenders-suppliers-close")?.addEventListener("click", () => closeSuppliersDropdown());
     $("#tenders-suppliers-search")?.addEventListener("input", () => renderSuppliersDropdown());
 
-    $("#tenders-suppliers-clear")?.addEventListener("click", () => {
+    $("#tenders-suppliers-clear")?.addEventListener("click", async () => {
       const pid = state.project?.id;
       if (!pid) return;
-      saveSelectedSuppliers(pid, []).then(async () => {
-        await loadMatrix(pid);
-        renderProject();
-      });
+      const allIds = (state.suppliers || [])
+        .map(s => Number(s.id))
+        .filter(Number.isFinite);
+      await saveSelectedSuppliers(pid, allIds);
+      await loadMatrix(pid);
+      renderProject();
+      if (state.suppliersDropdownOpen) {
+        renderSuppliersDropdown();
+      }
     });
 
     $("#tenders-suppliers-apply")?.addEventListener("click", async () => {
