@@ -640,7 +640,7 @@
               <button class="iconBtn" title="Скрыть" data-block="${esc(key)}">✕</button>
               <button class="iconBtn" title="Найти другой" data-find="1" data-item-id="${esc(it.id)}" data-supplier-id="${esc(sid)}">🔍</button>
               <button class="${cartClass}" title="Выбрать в корзину" data-pick="1" data-item-id="${esc(it.id)}" data-supplier-item-id="${esc(m.supplier_item_id)}">🛒</button>
-              <button class="${starClass}" title="Искать по названию" data-star="1" data-item-id="${esc(it.id)}" data-supplier-item-id="${esc(m.supplier_item_id)}">★</button>
+              <button class="${starClass}" title="Искать по названию" data-star="1" data-item-id="${esc(it.id)}" data-supplier-item-id="${esc(m.supplier_item_id)}" data-name-raw="${esc(m.name_raw || "")}">★</button>
             </div>
           </td>
         `;
@@ -710,8 +710,9 @@
         const itemId = Number(btn.getAttribute("data-item-id"));
         const supplierItemId = Number(btn.getAttribute("data-supplier-item-id"));
         const item = state.project?.items?.find(x => Number(x.id) === Number(itemId));
+        const nameFromCell = (btn.getAttribute("data-name-raw") || "").trim();
         const offer = item?.offers?.find(o => Number(o.supplier_item_id) === Number(supplierItemId));
-        const nameRaw = (offer?.name_raw || "").trim();
+        const nameRaw = (nameFromCell || offer?.name_raw || "").trim();
         if (!nameRaw) {
           alert("Не удалось определить название товара.");
           return;
