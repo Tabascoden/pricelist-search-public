@@ -490,7 +490,10 @@
       // найти минимальную цену по строке (по totalPrice)
       const candidates = supplierIds
         .map(sid => {
-          const m = getMatch(it.id, sid);
+          const selectedForSupplier = (it.offers || []).find(
+            o => Number(o.supplier_id) === Number(sid) && ["selected", "final"].includes(o.offer_type)
+          );
+          const m = selectedForSupplier || getMatch(it.id, sid);
           if (!m) return null;
           const score = Number(m.score);
           if (!Number.isFinite(score) || score < MIN_SCORE) return null;
@@ -524,8 +527,11 @@
         // picked?
         const picked = pickedSupplierId != null && pickedSupplierId === sid;
 
-        // match (best guess)
-        const m = getMatch(it.id, sid);
+        // match (best guess or selected)
+        const selectedForSupplier = (it.offers || []).find(
+          o => Number(o.supplier_id) === Number(sid) && ["selected", "final"].includes(o.offer_type)
+        );
+        const m = selectedForSupplier || getMatch(it.id, sid);
         const score = m ? Number(m.score) : NaN;
 
         if (blocked) {
