@@ -464,7 +464,7 @@ def create_app() -> Flask:
 
             cur.execute(
                 """
-                SELECT ti.id, ti.project_id, ti.row_no, ti.name_input, ti.qty, ti.unit_input, ti.category_id, ti.selected_offer_id
+                SELECT ti.id, ti.project_id, ti.row_no, ti.name_input, ti.search_name, ti.qty, ti.unit_input, ti.category_id, ti.selected_offer_id
                 FROM tender_items ti
                 WHERE ti.project_id=%s
                 ORDER BY ti.row_no ASC, ti.id ASC;
@@ -833,6 +833,12 @@ def create_app() -> Flask:
             updates.append("unit_input=%s")
             values.append(unit_input)
 
+        if "search_name" in data:
+            search_raw = data.get("search_name")
+            search_name = str(search_raw or "").strip() or None
+            updates.append("search_name=%s")
+            values.append(search_name)
+
         if not updates:
             return jsonify({"error": "no fields to update"}), 400
 
@@ -845,7 +851,7 @@ def create_app() -> Flask:
                         UPDATE tender_items
                         SET {", ".join(updates)}
                         WHERE id=%s
-                        RETURNING id, project_id, row_no, name_input, qty, unit_input;
+                        RETURNING id, project_id, row_no, name_input, search_name, qty, unit_input;
                         """,
                         (*values, item_id),
                     )
@@ -960,7 +966,7 @@ def create_app() -> Flask:
                           si.base_unit,
                           si.base_qty,
                           si.price_per_unit,
-                          similarity(coalesce(si.name_normalized, si.name_raw), ti.name_input) AS score
+                          similarity(coalesce(si.name_normalized, si.name_raw), coalesce(ti.search_name, ti.name_input)) AS score
                         FROM tender_items ti
                         CROSS JOIN suppliers sup
                         LEFT JOIN LATERAL (
@@ -969,7 +975,7 @@ def create_app() -> Flask:
                           WHERE si.supplier_id = sup.supplier_id
                             AND si.is_active IS TRUE
                             AND (ti.category_id IS NULL OR si.category_id = ti.category_id)
-                          ORDER BY similarity(coalesce(si.name_normalized, si.name_raw), ti.name_input) DESC,
+                          ORDER BY similarity(coalesce(si.name_normalized, si.name_raw), coalesce(ti.search_name, ti.name_input)) DESC,
                                    si.price_per_unit ASC NULLS LAST,
                                    si.id DESC
                           LIMIT 1
@@ -1252,7 +1258,7 @@ def create_app() -> Flask:
                 with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                     cur.execute(
                         """
-                        SELECT id, name_input, category_id
+                        SELECT id, name_input, search_name, category_id
                         FROM tender_items
                         WHERE id=%s;
                         """,
@@ -1262,7 +1268,8 @@ def create_app() -> Flask:
                     if not item:
                         return jsonify({"error": "not found"}), 404
                     q_filter = q_input or None
-                    q_similarity = q_filter or (item.get("name_input") or "")
+                    search_name = item.get("search_name") or ""
+                    q_similarity = q_filter or (search_name or item.get("name_input") or "")
                     q_like = f"%{q_filter}%" if q_filter else None
                     cur.execute(
                         """

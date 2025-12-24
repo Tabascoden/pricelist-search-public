@@ -45,6 +45,8 @@
     return `${fmtNum(n, 2)} ₽`;
   };
 
+  const normalizeName = (value) => String(value ?? "").trim().toLowerCase();
+
   const parseQtyValue = (value) => {
     const raw = String(value ?? "").trim();
     if (!raw) {
@@ -622,7 +624,11 @@
           (!picked && bestSid === sid) ? "best" : ""
         ].filter(Boolean).join(" ");
 
-        const cartClass = picked ? "iconBtn star-picked" : "iconBtn";
+        const searchName = normalizeName(it.search_name);
+        const matchName = normalizeName(m?.name_raw);
+        const starActive = !!searchName && !!matchName && searchName === matchName;
+        const cartClass = picked ? "iconBtn cart-picked" : "iconBtn";
+        const starClass = starActive ? "iconBtn star-picked" : "iconBtn";
         return `
           <td class="${cls}">
             <div class="supName">${esc(m.name_raw || "")}</div>
@@ -634,7 +640,7 @@
               <button class="iconBtn" title="Скрыть" data-block="${esc(key)}">✕</button>
               <button class="iconBtn" title="Найти другой" data-find="1" data-item-id="${esc(it.id)}" data-supplier-id="${esc(sid)}">🔍</button>
               <button class="${cartClass}" title="Выбрать в корзину" data-pick="1" data-item-id="${esc(it.id)}" data-supplier-item-id="${esc(m.supplier_item_id)}">🛒</button>
-              <button class="iconBtn" title="Искать по названию" data-star="1" data-item-id="${esc(it.id)}" data-supplier-item-id="${esc(m.supplier_item_id)}">★</button>
+              <button class="${starClass}" title="Искать по названию" data-star="1" data-item-id="${esc(it.id)}" data-supplier-item-id="${esc(m.supplier_item_id)}">★</button>
             </div>
           </td>
         `;
@@ -710,7 +716,10 @@
           alert("Не удалось определить название товара.");
           return;
         }
-        await updateTenderItem(itemId, { name_input: nameRaw });
+        const currentSearch = normalizeName(item?.search_name);
+        const nextSearch = normalizeName(nameRaw);
+        const searchName = currentSearch && currentSearch === nextSearch ? null : nameRaw;
+        await updateTenderItem(itemId, { search_name: searchName });
         await reloadProjectHard();
       };
     });

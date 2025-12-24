@@ -173,8 +173,10 @@
   #tenders-demo .iconBtn { width:28px; height:28px; display:inline-flex; align-items:center; justify-content:center; border:1px solid #e2e8f0; background:white; border-radius:8px; cursor:pointer; }
   #tenders-demo .iconBtn:hover { background:#f8fafc; }
   #tenders-demo .iconBtn:disabled { opacity:.45; cursor:not-allowed; }
-  #tenders-demo .iconBtn.star-picked { background:#22c55e; border-color:#22c55e; color:white; }
-  #tenders-demo .iconBtn.star-picked:hover { background:#16a34a; border-color:#16a34a; }
+  #tenders-demo .iconBtn.star-picked,
+  #tenders-demo .iconBtn.cart-picked { background:#22c55e; border-color:#22c55e; color:white; }
+  #tenders-demo .iconBtn.star-picked:hover,
+  #tenders-demo .iconBtn.cart-picked:hover { background:#16a34a; border-color:#16a34a; }
 
   #tenders-demo .supplierCell.picked { background: #ecfdf5; outline: 2px solid #34d399; outline-offset: -2px; border-radius: 10px; }
   #tenders-demo .supplierCell.best:not(.picked) { background: #fffbeb; outline: 2px solid #fbbf24; outline-offset: -2px; border-radius: 10px; }
