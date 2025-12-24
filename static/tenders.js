@@ -137,6 +137,20 @@
     return row[String(supplierId)] || null;
   }
 
+  function getStarSupplierId(item) {
+    const sourceId = item?.name_source_supplier_item_id;
+    if (sourceId == null) return null;
+    const offer = (item.offers || []).find(o => Number(o.supplier_item_id) === Number(sourceId));
+    if (offer?.supplier_id != null) return Number(offer.supplier_id);
+    const row = state.matrix?.[String(item.id)] || {};
+    for (const match of Object.values(row)) {
+      if (Number(match?.supplier_item_id) === Number(sourceId) && match?.supplier_id != null) {
+        return Number(match.supplier_id);
+      }
+    }
+    return null;
+  }
+
   function isBlocked(itemId, supplierId) {
     return !!state.blocked?.[`${itemId}:${supplierId}`];
   }
@@ -573,6 +587,10 @@
         bestSid = candidates[0].sid;
       }
 
+      const starredSupplierItemId = it.name_source_supplier_item_id != null
+        ? Number(it.name_source_supplier_item_id)
+        : null;
+      const starredSupplierId = getStarSupplierId(it);
       const selectedOfferId = it.selected_offer_id ? Number(it.selected_offer_id) : null;
       const cartOffer = selectedOfferId ? (it.offers || []).find(o => Number(o.id) === selectedOfferId) : null;
       const pickedSupplierId = cartOffer?.supplier_id != null ? Number(cartOffer.supplier_id) : null;
@@ -616,6 +634,10 @@
         }
 
         const { totalPrice } = calcTotals(m, it.qty);
+        const supplierItemId = Number(m.supplier_item_id);
+        const isStarred = starredSupplierItemId != null && supplierItemId === starredSupplierItemId;
+        const canPickCart = starredSupplierId == null || Number(sid) === starredSupplierId;
+        const cartDisabled = !canPickCart;
         const cls = [
           "supplierCell",
           picked ? "picked" : "",
@@ -623,6 +645,11 @@
         ].filter(Boolean).join(" ");
 
         const cartClass = picked ? "iconBtn star-picked" : "iconBtn";
+        const starClass = isStarred ? "iconBtn star-picked" : "iconBtn";
+        const cartTitle = cartDisabled
+          ? "Сначала снимите звезду у другого поставщика"
+          : "Выбрать в корзину";
+        const starTitle = isStarred ? "Снять звезду" : "Искать по названию";
         return `
           <td class="${cls}">
             <div class="supName">${esc(m.name_raw || "")}</div>
@@ -633,8 +660,8 @@
             <div class="iconRow">
               <button class="iconBtn" title="Скрыть" data-block="${esc(key)}">✕</button>
               <button class="iconBtn" title="Найти другой" data-find="1" data-item-id="${esc(it.id)}" data-supplier-id="${esc(sid)}">🔍</button>
-              <button class="${cartClass}" title="Выбрать в корзину" data-pick="1" data-item-id="${esc(it.id)}" data-supplier-item-id="${esc(m.supplier_item_id)}">🛒</button>
-              <button class="iconBtn" title="Искать по названию" data-star="1" data-item-id="${esc(it.id)}" data-supplier-item-id="${esc(m.supplier_item_id)}">★</button>
+              <button class="${cartClass}" title="${esc(cartTitle)}" data-pick="1" data-item-id="${esc(it.id)}" data-supplier-id="${esc(sid)}" data-supplier-item-id="${esc(m.supplier_item_id)}" ${cartDisabled ? "disabled" : ""}>🛒</button>
+              <button class="${starClass}" title="${esc(starTitle)}" data-star="1" data-item-id="${esc(it.id)}" data-supplier-id="${esc(sid)}" data-supplier-item-id="${esc(m.supplier_item_id)}">★</button>
             </div>
           </td>
         `;
@@ -694,7 +721,25 @@
     $$("[data-pick]", tbl).forEach(btn => {
       btn.onclick = async () => {
         const itemId = Number(btn.getAttribute("data-item-id"));
+        const supplierId = Number(btn.getAttribute("data-supplier-id"));
         const supplierItemId = Number(btn.getAttribute("data-supplier-item-id"));
+        const item = state.project?.items?.find(x => Number(x.id) === Number(itemId));
+        if (!item || !Number.isFinite(supplierId)) return;
+        const starredSupplierId = getStarSupplierId(item);
+        const selectedOfferId = item.selected_offer_id ? Number(item.selected_offer_id) : null;
+        const cartOffer = selectedOfferId ? (item.offers || []).find(o => Number(o.id) === selectedOfferId) : null;
+        const cartSupplierItemId = cartOffer?.supplier_item_id != null ? Number(cartOffer.supplier_item_id) : null;
+
+        if (cartSupplierItemId != null && cartSupplierItemId === supplierItemId) {
+          await clearFromCart(itemId);
+          return;
+        }
+
+        if (starredSupplierId != null && starredSupplierId !== supplierId) {
+          alert("Сначала снимите звезду у другого поставщика.");
+          return;
+        }
+
         await pickToCart(itemId, supplierItemId);
       };
     });
@@ -702,15 +747,46 @@
     $$("[data-star]", tbl).forEach(btn => {
       btn.onclick = async () => {
         const itemId = Number(btn.getAttribute("data-item-id"));
+        const supplierId = Number(btn.getAttribute("data-supplier-id"));
         const supplierItemId = Number(btn.getAttribute("data-supplier-item-id"));
         const item = state.project?.items?.find(x => Number(x.id) === Number(itemId));
-        const offer = item?.offers?.find(o => Number(o.supplier_item_id) === Number(supplierItemId));
-        const nameRaw = (offer?.name_raw || "").trim();
+        if (!item || !Number.isFinite(supplierId)) return;
+        const starredSupplierItemId = item.name_source_supplier_item_id != null
+          ? Number(item.name_source_supplier_item_id)
+          : null;
+        const starredSupplierId = getStarSupplierId(item);
+        const selectedOfferId = item.selected_offer_id ? Number(item.selected_offer_id) : null;
+        const cartOffer = selectedOfferId ? (item.offers || []).find(o => Number(o.id) === selectedOfferId) : null;
+        const cartSupplierId = cartOffer?.supplier_id != null ? Number(cartOffer.supplier_id) : null;
+        const selectedForSupplier = (item.offers || []).find(
+          o => Number(o.supplier_id) === Number(supplierId) && ["selected", "final"].includes(o.offer_type)
+        );
+        const match = selectedForSupplier || getMatch(itemId, supplierId);
+        const nameRaw = (match?.name_raw || "").trim();
         if (!nameRaw) {
           alert("Не удалось определить название товара.");
           return;
         }
-        await updateTenderItem(itemId, { name_input: nameRaw });
+
+        if (starredSupplierItemId != null && starredSupplierItemId === supplierItemId) {
+          const originalName = (item.name_original || item.name_input || nameRaw).trim();
+          await updateTenderItem(itemId, {
+            name_input: originalName,
+            name_source_supplier_item_id: null,
+          });
+          await reloadProjectHard();
+          return;
+        }
+
+        if (cartSupplierId != null && cartSupplierId !== supplierId) {
+          alert("Сначала уберите позицию из корзины или выберите того же поставщика.");
+          return;
+        }
+
+        await updateTenderItem(itemId, {
+          name_input: nameRaw,
+          name_source_supplier_item_id: supplierItemId,
+        });
         await reloadProjectHard();
       };
     });
