@@ -130,6 +130,21 @@
   </div>
 </div>
 
+<!-- ORDERS MODAL -->
+<div class="tender-modal hidden" id="tender-orders-modal" aria-hidden="true">
+  <div class="tender-modal-body" role="dialog" aria-modal="true">
+    <div class="tender-modal-header">
+      <div>
+        <div class="h3">Собранные заказы</div>
+        <div class="sub" id="tender-orders-subtitle">Один заказ на каждого поставщика из корзины.</div>
+      </div>
+      <button class="btn" id="tender-orders-close">Закрыть</button>
+    </div>
+
+    <div id="tender-orders-body" class="sub">Загрузка…</div>
+  </div>
+</div>
+
 <style>
   #tenders-demo .tender-flex { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
   #tenders-demo .tender-form { margin-left:auto; }
