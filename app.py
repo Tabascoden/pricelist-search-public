@@ -952,6 +952,7 @@ def create_app() -> Flask:
         project_id = data.get("project_id")
         tender_item_id = data.get("tender_item_id") or item_id
         row_no = data.get("row_no")
+        add_to_cart = data.get("add_to_cart")
 
         if supplier_item_id is None:
             return jsonify({"error": "supplier_item_id is required"}), 400
@@ -967,6 +968,12 @@ def create_app() -> Flask:
             row_no = int(row_no) if row_no is not None else None
         except Exception:
             row_no = None
+        if add_to_cart is None:
+            add_to_cart = True
+        if isinstance(add_to_cart, str):
+            add_to_cart = add_to_cart.strip().lower() in ("1", "true", "yes", "y")
+        else:
+            add_to_cart = bool(add_to_cart)
         try:
             with db_connect() as conn:
                 ensure_schema_compare(conn)
@@ -1052,12 +1059,20 @@ def create_app() -> Flask:
                     selected_id = _scalar(cur.fetchone(), "id")
                     _rebuild_offers_for_item(conn, tender_item_id, item["project_id"], supplier_item_id)
 
-                    cur.execute(
-                        "UPDATE tender_items SET selected_offer_id=%s WHERE id=%s;",
-                        (selected_id, tender_item_id),
-                    )
+                    if add_to_cart:
+                        cur.execute(
+                            "UPDATE tender_items SET selected_offer_id=%s WHERE id=%s;",
+                            (selected_id, tender_item_id),
+                        )
                 conn.commit()
-            return jsonify({"ok": True, "selected_offer_id": selected_id, "tender_item_id": tender_item_id})
+            return jsonify(
+                {
+                    "ok": True,
+                    "selected_offer_id": selected_id if add_to_cart else None,
+                    "tender_item_id": tender_item_id,
+                    "add_to_cart": add_to_cart,
+                }
+            )
         except Exception as e:
             return jsonify({"error": "internal error", "details": str(e)}), 500
 
