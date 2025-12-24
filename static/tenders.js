@@ -15,7 +15,7 @@
     matrix: {},                 // { [itemId]: { [supplierId]: match } }
     blocked: {},                // { ["itemId:supplierId"]: true }
     matchModal: { open: false, itemId: null, supplierId: null, rows: [], loading: false },
-    suppliersModalOpen: false,
+    suppliersDropdownOpen: false,
     loading: false,
     error: null,
   };
@@ -183,19 +183,19 @@
     }
   }
 
-  // ---------- UI: modals ----------
-  function openSuppliersModal() {
-    state.suppliersModalOpen = true;
-    $("#tenders-suppliers-modal").classList.remove("hidden");
-    renderSuppliersModal();
+  // ---------- UI: dropdowns ----------
+  function openSuppliersDropdown() {
+    state.suppliersDropdownOpen = true;
+    $("#tenders-suppliers-dropdown").classList.remove("hidden");
+    renderSuppliersDropdown();
   }
 
-  function closeSuppliersModal() {
-    state.suppliersModalOpen = false;
-    $("#tenders-suppliers-modal").classList.add("hidden");
+  function closeSuppliersDropdown() {
+    state.suppliersDropdownOpen = false;
+    $("#tenders-suppliers-dropdown").classList.add("hidden");
   }
 
-  function renderSuppliersModal() {
+  function renderSuppliersDropdown() {
     const list = $("#tenders-suppliers-list");
     const q = ($("#tenders-suppliers-search").value || "").trim().toLowerCase();
 
@@ -705,6 +705,17 @@
 
   // ---------- bind top controls ----------
   function bindStaticHandlers() {
+    const createForm = $("#tenders-create-form");
+    if (createForm) {
+      createForm.onsubmit = async (e) => {
+        e.preventDefault();
+        const fd = new FormData(createForm);
+        const j = await apiJson("/api/tenders", { method: "POST", body: fd });
+        const id = j?.project?.id;
+        if (id) location.href = `/tenders/${id}`;
+      };
+    }
+
     const uploadForm = $("#tenders-upload-form");
     if (uploadForm) {
       uploadForm.onsubmit = async (e) => {
@@ -740,11 +751,19 @@
       location.href = "/tenders";
     });
 
-    $("#tenders-pick-suppliers-btn")?.addEventListener("click", () => openSuppliersModal());
+    const pickSuppliersBtn = $("#tenders-pick-suppliers-btn");
+    pickSuppliersBtn?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (state.suppliersDropdownOpen) {
+        closeSuppliersDropdown();
+      } else {
+        openSuppliersDropdown();
+      }
+    });
     $("#tenders-build-orders-btn")?.addEventListener("click", () => buildOrders());
 
-    $("#tenders-suppliers-close")?.addEventListener("click", () => closeSuppliersModal());
-    $("#tenders-suppliers-search")?.addEventListener("input", () => renderSuppliersModal());
+    $("#tenders-suppliers-close")?.addEventListener("click", () => closeSuppliersDropdown());
+    $("#tenders-suppliers-search")?.addEventListener("input", () => renderSuppliersDropdown());
 
     $("#tenders-suppliers-clear")?.addEventListener("click", () => {
       const pid = state.project?.id;
@@ -766,11 +785,20 @@
 
       await saveSelectedSuppliers(pid, ids);
       await loadMatrix(pid);
-      closeSuppliersModal();
+      closeSuppliersDropdown();
       renderProject();
     });
 
     $("#tenders-match-close")?.addEventListener("click", () => closeMatchModal());
+
+    document.addEventListener("click", (e) => {
+      if (!state.suppliersDropdownOpen) return;
+      const dropdown = $("#tenders-suppliers-dropdown");
+      const trigger = $("#tenders-pick-suppliers-btn");
+      if (!dropdown || !trigger) return;
+      if (dropdown.contains(e.target) || trigger.contains(e.target)) return;
+      closeSuppliersDropdown();
+    });
   }
 
   // ---------- boot ----------
