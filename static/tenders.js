@@ -358,7 +358,25 @@
       }),
     });
 
-    await reloadProjectHard();
+    const updated = await refreshItemOffers(itemId);
+    if (updated) {
+      renderProjectTable();
+      renderCart();
+    } else {
+      await reloadProjectHard();
+    }
+  }
+
+  async function refreshItemOffers(itemId) {
+    const item = state.project?.items?.find(x => Number(x.id) === Number(itemId));
+    if (!item) return false;
+    try {
+      const j = await apiJson(`/api/tenders/items/${itemId}/offers`);
+      item.offers = j.offers || [];
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   async function updateTenderItem(itemId, payload) {
