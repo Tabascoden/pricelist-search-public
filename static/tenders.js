@@ -1,7 +1,8 @@
 // static/tenders.js
 (() => {
   const ROOT_ID = "tenders-demo";
-  const LS_KEY = "tendersDemoStateV2";
+  const LS_KEY = "tendersDemoStateV3";
+  const MIN_SCORE = 0.3;
 
   const $ = (sel, root = document) => root.querySelector(sel);
   const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
@@ -14,6 +15,9 @@
       .replaceAll('"', "&quot;")
       .replaceAll("'", "&#039;");
 
+  const encKey = (s) => encodeURIComponent(String(s ?? ""));
+  const decKey = (s) => decodeURIComponent(String(s ?? ""));
+
   const fmtNum = (v, digits = 2) => {
     if (v === null || v === undefined || v === "") return "";
     const n = Number(v);
@@ -23,6 +27,92 @@
 
   function nowISO() {
     return new Date().toISOString();
+  }
+
+  function ensureStyles() {
+    if (document.getElementById("tenders-ux-styles")) return;
+    const st = document.createElement("style");
+    st.id = "tenders-ux-styles";
+    st.textContent = `
+      /* UX additions for supplier comparison */
+      #tenders-demo .tender-grid { overflow:auto; }
+      #tenders-demo .tender-grid table { min-width: 980px; }
+
+      #tenders-demo .supplierTh { width: 260px; }
+      #tenders-demo .supplierCell {
+        position: relative;
+        min-width: 240px;
+        max-width: 340px;
+      }
+      #tenders-demo .supplierCell .supName { font-weight: 700; line-height: 1.25; }
+      #tenders-demo .supplierCell .supMeta { margin-top: 4px; display:flex; gap:10px; flex-wrap:wrap; align-items:baseline; }
+      #tenders-demo .supplierCell .supPrice { font-weight: 800; }
+      #tenders-demo .supplierCell .supScore { color:#64748b; font-size: 12px; }
+      #tenders-demo .supplierCell .supEmpty { height: 18px; }
+
+      #tenders-demo .iconRow { display:flex; gap:8px; margin-top: 8px; }
+      #tenders-demo .iconBtn {
+        display:inline-flex; align-items:center; justify-content:center;
+        width: 30px; height: 30px;
+        border-radius: 10px;
+        border: 1px solid var(--border);
+        background: #fff;
+        cursor: pointer;
+        user-select:none;
+      }
+      #tenders-demo .iconBtn:hover { background:#f8fafc; }
+      #tenders-demo .iconBtn:disabled { opacity: .45; cursor: not-allowed; }
+
+      #tenders-demo .supplierCell.picked {
+        background: #ecfdf5;
+        box-shadow: inset 0 0 0 2px #10b981;
+      }
+      #tenders-demo .supplierCell.best:not(.picked) {
+        background: #f0f9ff;
+        box-shadow: inset 0 0 0 2px #38bdf8;
+      }
+
+      #tenders-demo .cartBox {
+        margin: 14px 0;
+        padding: 12px;
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        background: #ffffff;
+      }
+      #tenders-demo .cartTop { display:flex; gap:12px; align-items:center; justify-content:space-between; flex-wrap:wrap; }
+      #tenders-demo .cartTitle { font-weight: 900; }
+      #tenders-demo .cartSub { color:#64748b; font-size: 13px; }
+      #tenders-demo .cartTable { width:100%; border-collapse: collapse; margin-top: 10px; }
+      #tenders-demo .cartTable th, #tenders-demo .cartTable td {
+        padding: 8px 10px;
+        border-bottom: 1px solid var(--border);
+        font-size: 13px;
+        vertical-align: top;
+        text-align: left;
+      }
+      #tenders-demo .cartTable th { background:#f8fafc; font-size: 12px; text-transform: uppercase; color:#475569; }
+
+      #tenders-demo .suppliersList {
+        display:grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px 12px;
+        margin-top: 10px;
+      }
+      #tenders-demo .suppliersItem {
+        display:flex; align-items:center; gap:10px;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 10px 12px;
+        background: #fff;
+      }
+      #tenders-demo .suppliersItem input { transform: translateY(1px); }
+      #tenders-demo .suppliersActions { display:flex; gap:10px; justify-content:flex-end; margin-top: 12px; }
+
+      @media (max-width: 900px) {
+        #tenders-demo .suppliersList { grid-template-columns: 1fr; }
+      }
+    `;
+    document.head.appendChild(st);
   }
 
   function parseRoute() {
@@ -41,11 +131,11 @@
   function loadState() {
     try {
       const raw = localStorage.getItem(LS_KEY);
-      if (raw) return JSON.parse(raw);
+      if (raw) return normalizeState(JSON.parse(raw));
     } catch {}
     const seeded = seedState();
     saveState(seeded);
-    return seeded;
+    return normalizeState(seeded);
   }
 
   function saveState(st) {
@@ -53,7 +143,6 @@
   }
 
   function seedState() {
-    // Offers generator
     const suppliers = ["Поставщик A", "Поставщик B", "Поставщик C", "Поставщик Г", "Поставщик Д"];
     const goods = [
       "Томаты тепличные",
@@ -91,6 +180,7 @@
       id,
       title,
       created_at: nowISO(),
+      selectedSuppliers: suppliers.slice(0, 3),
       items
     });
 
@@ -100,8 +190,9 @@
       name,
       qty,
       unit,
-      benchmarkOfferId: null,
-      alternativeOfferIds: [],
+      // UI-only fields:
+      compareOffers: {}, // supplier -> offerId|null
+      picked: null,      // { supplier, offerId } | null
       offers: makeOffers(name)
     });
 
@@ -124,7 +215,7 @@
     };
   }
 
-  // --- Rendering ---
+  // --- State helpers ---
   let state = null;
 
   function getProject(id) {
@@ -139,6 +230,76 @@
     return item.offers.find((o) => o.id === offerId) || null;
   }
 
+  function listAllSuppliers(project) {
+    const set = new Set();
+    for (const it of project.items || []) {
+      for (const o of it.offers || []) set.add(o.supplier);
+    }
+    return Array.from(set).sort((a, b) => a.localeCompare(b, "ru"));
+  }
+
+  function autoPickOfferId(item, supplier) {
+    const candidates = (item.offers || [])
+      .filter((o) => o.supplier === supplier && Number(o.score) >= MIN_SCORE);
+
+    if (!candidates.length) return null;
+
+    candidates.sort((a, b) => {
+      if ((b.score ?? 0) !== (a.score ?? 0)) return (b.score ?? 0) - (a.score ?? 0);
+      return (a.ppu ?? 1e9) - (b.ppu ?? 1e9);
+    });
+
+    return candidates[0].id;
+  }
+
+  function normalizeState(st) {
+    st = st && typeof st === "object" ? st : seedState();
+    st.projects = Array.isArray(st.projects) ? st.projects : [];
+
+    for (const p of st.projects) {
+      p.items = Array.isArray(p.items) ? p.items : [];
+
+      // selected suppliers
+      const allSuppliers = listAllSuppliers(p);
+      if (!Array.isArray(p.selectedSuppliers) || !p.selectedSuppliers.length) {
+        p.selectedSuppliers = allSuppliers.slice(0, 3);
+      } else {
+        // drop suppliers not present anymore
+        p.selectedSuppliers = p.selectedSuppliers.filter((s) => allSuppliers.includes(s));
+        if (!p.selectedSuppliers.length) p.selectedSuppliers = allSuppliers.slice(0, 3);
+      }
+
+      for (const it of p.items) {
+        if (!it.compareOffers || typeof it.compareOffers !== "object") it.compareOffers = {};
+        if (typeof it.picked !== "object") it.picked = null;
+
+        // ensure compare offer entries exist for selected suppliers
+        for (const s of p.selectedSuppliers) {
+          if (!(s in it.compareOffers)) {
+            it.compareOffers[s] = autoPickOfferId(it, s);
+          }
+        }
+
+        // validate compare offers (score threshold)
+        for (const [sup, oid] of Object.entries(it.compareOffers)) {
+          if (!oid) continue;
+          const off = getOffer(it, oid);
+          if (!off || Number(off.score) < MIN_SCORE) it.compareOffers[sup] = null;
+        }
+
+        // validate picked
+        if (it.picked && it.picked.offerId) {
+          const off = getOffer(it, it.picked.offerId);
+          if (!off || Number(off.score) < MIN_SCORE) it.picked = null;
+        } else {
+          it.picked = null;
+        }
+      }
+    }
+    return st;
+  }
+
+  // --- Views ---
   function listView(root) {
     const listWrap = $("#tender-projects", root);
     const form = $("#tender-create-form", root);
@@ -146,7 +307,6 @@
 
     if (!listWrap || !form) return;
 
-    // table
     const projects = [...state.projects].sort((a, b) => b.id - a.id);
 
     let html = `
@@ -189,28 +349,26 @@
     `;
     listWrap.innerHTML = html;
 
-    // bind open/delete
     $$('button[data-action="open"]', listWrap).forEach((btn) => {
-      btn.addEventListener("click", () => {
+      btn.onclick = () => {
         const id = Number(btn.dataset.id);
         if (!Number.isFinite(id)) return;
         navigate(`/tenders/${id}`);
-      });
+      };
     });
 
     $$('button[data-action="delete"]', listWrap).forEach((btn) => {
-      btn.addEventListener("click", () => {
+      btn.onclick = () => {
         const id = Number(btn.dataset.id);
         if (!Number.isFinite(id)) return;
         if (!confirm(`Удалить тендер #${id}? (в демо — удалит только в UI)`)) return;
         state.projects = state.projects.filter((p) => p.id !== id);
         saveState(state);
         render();
-      });
+      };
     });
 
-    // create
-    form.addEventListener("submit", (e) => {
+    form.onsubmit = (e) => {
       e.preventDefault();
       const title = (input?.value || "").trim() || "Тендер";
       const maxId = Math.max(0, ...state.projects.map((p) => p.id));
@@ -220,6 +378,7 @@
         id: newId,
         title,
         created_at: nowISO(),
+        selectedSuppliers: ["Поставщик A", "Поставщик B", "Поставщик C"],
         items: [
           {
             id: state.lastIds.item + 1,
@@ -227,9 +386,9 @@
             name: "Позиция 1 (пример)",
             qty: 1,
             unit: "шт",
-            benchmarkOfferId: null,
-            alternativeOfferIds: [],
-            offers: seedState().projects[0].items[0].offers // reuse offers shape
+            compareOffers: {},
+            picked: null,
+            offers: seedState().projects[0].items[0].offers
           }
         ]
       };
@@ -237,221 +396,11 @@
       state.lastIds.item += 1;
       state.lastIds.project = newId;
       state.projects.unshift(newProject);
+      state = normalizeState(state);
       saveState(state);
 
       navigate(`/tenders/${newId}`);
-    });
-  }
-
-  // ---- Modal state ----
-  let modalProjectId = null;
-  let modalItemId = null;
-  let sortState = { key: "score", dir: "desc" }; // default
-  let filteredOfferIds = null;
-
-  function openModal(projectId, itemId) {
-    modalProjectId = projectId;
-    modalItemId = itemId;
-    sortState = { key: "score", dir: "desc" };
-    filteredOfferIds = null;
-
-    const modal = $("#tender-modal");
-    if (!modal) return;
-    modal.classList.remove("hidden");
-    modal.setAttribute("aria-hidden", "false");
-
-    renderModal();
-  }
-
-  function closeModal() {
-    const modal = $("#tender-modal");
-    if (!modal) return;
-    modal.classList.add("hidden");
-    modal.setAttribute("aria-hidden", "true");
-    modalProjectId = null;
-    modalItemId = null;
-    filteredOfferIds = null;
-  }
-
-  function renderModal() {
-    const root = document;
-    const project = getProject(modalProjectId);
-    if (!project) return;
-
-    const item = getItem(project, modalItemId);
-    if (!item) return;
-
-    const subtitle = $("#tender-modal-subtitle", root);
-    const manual = $("#tender-search-manual", root);
-    const base = $("#tender-search-base", root);
-    const baseHint = $("#tender-search-base-hint", root);
-    const mode = $("#tender-candidates-mode", root);
-    const benchBox = $("#tender-benchmark-box", root);
-    const tbody = $("#tender-offers-body", root);
-
-    if (subtitle) subtitle.textContent = `Позиция: ${item.rowNo}. ${item.name} · ${fmtNum(item.qty, 3)} ${item.unit}`;
-
-    // base search availability
-    const hasBenchmark = !!item.benchmarkOfferId;
-    if (base) {
-      base.value = hasBenchmark ? "benchmark" : "purchase";
-      base.querySelector('option[value="benchmark"]').disabled = !hasBenchmark;
-    }
-    if (baseHint) {
-      baseHint.textContent = hasBenchmark
-        ? "Можно искать по эталону (после выбора эталона) или по строке закупки."
-        : "Эталона нет — доступен первичный поиск по строке закупки.";
-    }
-
-    // benchmark box
-    if (benchBox) {
-      if (!item.benchmarkOfferId) {
-        benchBox.textContent = "Эталон ещё не выбран. Найдите кандидатов и нажмите «Сделать эталоном».";
-      } else {
-        const offer = getOffer(item, item.benchmarkOfferId);
-        benchBox.innerHTML = offer
-          ? `<b>${esc(offer.supplier)}</b> · ${esc(offer.name)} · <b>${fmtNum(offer.ppu)} ₽/ед</b> (score ${fmtNum(offer.score, 2)})`
-          : "Эталон выбран, но оффер не найден (демо-состояние).";
-      }
-    }
-
-    // determine candidates list
-    let offers = [...item.offers];
-    let modeText = "по строке закупки";
-    const manualQ = (manual?.value || "").trim();
-
-    if (manualQ) {
-      modeText = `ручной поиск: “${manualQ}”`;
-      const q = manualQ.toLowerCase();
-      offers = offers.filter((o) => `${o.supplier} ${o.name}`.toLowerCase().includes(q));
-    } else {
-      const baseVal = base?.value || "purchase";
-      if (baseVal === "benchmark" && hasBenchmark) {
-        modeText = "по эталону";
-        const b = getOffer(item, item.benchmarkOfferId);
-        const q = (b?.name || "").toLowerCase();
-        offers = offers.filter((o) => o.name.toLowerCase().includes(q.split(" ")[0] || q));
-      } else {
-        modeText = "по строке закупки";
-        const q = item.name.toLowerCase();
-        offers = offers.filter((o) => o.name.toLowerCase().includes(q.split(" ")[0] || q));
-      }
-    }
-
-    // remember filtered ids to keep stable between sorts
-    filteredOfferIds = offers.map((o) => o.id);
-    if (mode) mode.textContent = `— режим: ${modeText}`;
-
-    // sorting
-    offers.sort((a, b) => compareOffers(a, b, sortState.key, sortState.dir));
-
-    // render rows
-    if (!tbody) return;
-
-    if (!offers.length) {
-      tbody.innerHTML = `<tr><td colspan="6" class="sub">Ничего не найдено (демо-фильтр).</td></tr>`;
-      return;
-    }
-
-    tbody.innerHTML = offers
-      .map((o) => {
-        const isBenchmark = item.benchmarkOfferId === o.id;
-        const isAlt = item.alternativeOfferIds.includes(o.id);
-
-        return `
-          <tr>
-            <td>${esc(o.supplier)}</td>
-            <td>${esc(o.name)}${isBenchmark ? ` <span class="tag" style="margin-left:6px;">Эталон</span>` : ""}</td>
-            <td>${fmtNum(o.price)}</td>
-            <td><b>${fmtNum(o.ppu)}</b></td>
-            <td>${fmtNum(o.score, 2)}</td>
-            <td style="white-space:nowrap;">
-              <button class="btn primary" data-action="set-benchmark" data-oid="${o.id}" ${isBenchmark ? "disabled" : ""}>
-                Сделать эталоном
-              </button>
-              <button class="btn" data-action="toggle-alt" data-oid="${o.id}">
-                ${isAlt ? "Убрать альтернативу" : "Добавить как альтернативу"}
-              </button>
-            </td>
-          </tr>
-        `;
-      })
-      .join("");
-
-    // bind actions
-    $$('button[data-action="set-benchmark"]', tbody).forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const oid = Number(btn.dataset.oid);
-        if (!Number.isFinite(oid)) return;
-        item.benchmarkOfferId = oid;
-
-        // когда выбрали эталон — разумно очистить альтернативы и искать заново от эталона (демо-логика)
-        item.alternativeOfferIds = item.alternativeOfferIds.filter((id) => id !== oid);
-        saveState(state);
-
-        renderProjectView(); // refresh main table
-        renderModal();       // refresh modal
-      });
-    });
-
-    $$('button[data-action="toggle-alt"]', tbody).forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const oid = Number(btn.dataset.oid);
-        if (!Number.isFinite(oid)) return;
-        const idx = item.alternativeOfferIds.indexOf(oid);
-        if (idx >= 0) item.alternativeOfferIds.splice(idx, 1);
-        else item.alternativeOfferIds.push(oid);
-
-        // не даём эталону быть альтернативой
-        item.alternativeOfferIds = item.alternativeOfferIds.filter((id) => id !== item.benchmarkOfferId);
-
-        saveState(state);
-        renderProjectView();
-        renderModal();
-      });
-    });
-
-    // bind sorting
-    const table = $("#tender-offers-table", root);
-    if (table) {
-      const ths = $$("th.sortable", table);
-      ths.forEach((th) => {
-        th.onclick = () => {
-          const key = th.dataset.sort;
-          if (!key) return;
-          if (sortState.key === key) {
-            sortState.dir = sortState.dir === "asc" ? "desc" : "asc";
-          } else {
-            sortState.key = key;
-            sortState.dir = key === "supplier" || key === "name" ? "asc" : "desc";
-          }
-          renderModal();
-        };
-      });
-    }
-  }
-
-  function compareOffers(a, b, key, dir) {
-    const mul = dir === "asc" ? 1 : -1;
-    let va, vb;
-
-    switch (key) {
-      case "supplier":
-        va = (a.supplier || "").toLowerCase();
-        vb = (b.supplier || "").toLowerCase();
-        return va.localeCompare(vb) * mul;
-      case "name":
-        va = (a.name || "").toLowerCase();
-        vb = (b.name || "").toLowerCase();
-        return va.localeCompare(vb) * mul;
-      case "price":
-        return (Number(a.price) - Number(b.price)) * mul;
-      case "ppu":
-        return (Number(a.ppu) - Number(b.ppu)) * mul;
-      case "score":
-      default:
-        return (Number(a.score) - Number(b.score)) * mul;
-    }
+    };
   }
 
   function projectView(root, projectId) {
@@ -460,6 +409,7 @@
     const itemsWrap = $("#tender-items", root);
 
     const uploadBtn = $("#tender-upload-btn", root);
+    const suppliersBtn = $("#tender-suppliers-btn", root);
     const autopickBtn = $("#tender-autopick", root);
     const exportBtn = $("#tender-export", root);
 
@@ -473,32 +423,36 @@
 
     if (titleEl) titleEl.textContent = `Тендер #${project.id} — ${project.title || "Тендер"}`;
 
-    backBtn?.addEventListener("click", () => navigate("/tenders"));
+    if (backBtn) backBtn.onclick = () => navigate("/tenders");
+    if (uploadBtn) uploadBtn.onclick = () => alert("Демо: загрузка XLSX будет подключена позже.");
+    if (exportBtn) exportBtn.onclick = () => exportCSV(project);
 
-    uploadBtn?.addEventListener("click", () => alert("Демо: загрузка XLSX будет подключена позже."));
-    exportBtn?.addEventListener("click", () => exportCSV(project));
+    if (suppliersBtn) {
+      suppliersBtn.onclick = () => openSuppliersModal(project.id);
+    }
 
-    autopickBtn?.addEventListener("click", () => {
-      // демо-логика: выбираем эталон как max(score), при равенстве min(ppu), и добавляем 2 альтернативы
-      for (const it of project.items) {
-        const best = [...it.offers].sort((a, b) => {
-          if (b.score !== a.score) return b.score - a.score;
-          return (a.ppu ?? 1e9) - (b.ppu ?? 1e9);
-        })[0];
-        if (best) it.benchmarkOfferId = best.id;
-
-        const alts = [...it.offers]
-          .filter((o) => o.id !== it.benchmarkOfferId)
-          .sort((a, b) => (a.ppu ?? 1e9) - (b.ppu ?? 1e9))
-          .slice(0, 3)
-          .map((o) => o.id);
-
-        it.alternativeOfferIds = alts;
-      }
-      saveState(state);
-      renderProjectView();
-      alert("Автоподбор (демо) выполнен: выставили эталон и альтернативы.");
-    });
+    if (autopickBtn) {
+      autopickBtn.onclick = () => {
+        // Автоподбор: заполняем ячейки и выбираем минимум по цене/ед среди выбранных поставщиков
+        for (const it of project.items) {
+          for (const s of project.selectedSuppliers) {
+            if (!(s in it.compareOffers)) it.compareOffers[s] = autoPickOfferId(it, s);
+            if (!it.compareOffers[s]) it.compareOffers[s] = autoPickOfferId(it, s);
+          }
+          let best = null;
+          for (const s of project.selectedSuppliers) {
+            const oid = it.compareOffers[s];
+            const off = oid ? getOffer(it, oid) : null;
+            if (!off) continue;
+            if (!best || (off.ppu ?? 1e9) < (best.ppu ?? 1e9)) best = off;
+          }
+          it.picked = best ? { supplier: best.supplier, offerId: best.id } : null;
+        }
+        saveState(state);
+        renderProjectView();
+        alert("Автоподбор выполнен: заполнили сравнение и выбрали минимальную цену/ед в корзину.");
+      };
+    }
 
     renderProjectView();
   }
@@ -510,8 +464,7 @@
     const route = parseRoute();
     if (route.page !== "project") return;
 
-    const projectId = route.projectId;
-    const project = getProject(projectId);
+    const project = getProject(route.projectId);
     const itemsWrap = $("#tender-items", root);
     if (!itemsWrap) return;
 
@@ -520,9 +473,81 @@
       return;
     }
 
+    // normalize project each render (in case suppliers changed)
+    state = normalizeState(state);
+    saveState(state);
+
+    const suppliers = project.selectedSuppliers || [];
     const rows = [...project.items].sort((a, b) => (a.rowNo ?? 0) - (b.rowNo ?? 0));
 
-    let html = `
+    // cart summary
+    const pickedRows = rows
+      .map((it) => {
+        if (!it.picked) return null;
+        const off = getOffer(it, it.picked.offerId);
+        if (!off) return null;
+        const amount = (Number(it.qty) || 0) * (Number(off.ppu) || 0);
+        return { it, off, amount };
+      })
+      .filter(Boolean);
+
+    const total = pickedRows.reduce((s, x) => s + (x.amount || 0), 0);
+
+    const cartHtml = `
+      <div class="cartBox">
+        <div class="cartTop">
+          <div>
+            <div class="cartTitle">Корзина</div>
+            <div class="cartSub">
+              Позиции: <b>${pickedRows.length}</b>
+              · Итого: <b>${fmtNum(total)} ₽</b>
+            </div>
+          </div>
+          <div class="cartSub">Нажмите ★ в ячейке поставщика, чтобы добавить строку в корзину (зелёная подсветка).</div>
+        </div>
+        ${
+          pickedRows.length
+            ? `
+              <table class="cartTable">
+                <thead>
+                  <tr>
+                    <th style="width:60px;">№</th>
+                    <th>Позиция</th>
+                    <th style="width:160px;">Поставщик</th>
+                    <th>Товар</th>
+                    <th style="width:110px;">Цена/ед</th>
+                    <th style="width:110px;">Сумма</th>
+                    <th style="width:60px;"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${pickedRows
+                    .map(
+                      ({ it, off, amount }) => `
+                        <tr>
+                          <td>${esc(it.rowNo)}</td>
+                          <td>${esc(it.name)}</td>
+                          <td><b>${esc(off.supplier)}</b></td>
+                          <td>${esc(off.name)}</td>
+                          <td><b>${fmtNum(off.ppu)}</b></td>
+                          <td><b>${fmtNum(amount)}</b></td>
+                          <td>
+                            <button class="btn" data-action="cart-remove" data-item="${it.id}" title="Убрать из корзины">✕</button>
+                          </td>
+                        </tr>
+                      `
+                    )
+                    .join("")}
+                </tbody>
+              </table>
+            `
+            : `<div class="sub" style="margin-top:10px;">Корзина пустая — выберите позиции, нажав ★.</div>`
+        }
+      </div>
+    `;
+
+    // main comparison table
+    let html = `${cartHtml}
       <div class="tender-grid">
         <table>
           <thead>
@@ -531,59 +556,34 @@
               <th>Позиция закупки</th>
               <th style="width:90px;">Кол-во</th>
               <th style="width:70px;">Ед.</th>
-
-              <th style="width:180px;">Эталон: Поставщик</th>
-              <th>Эталон: Товар</th>
-              <th style="width:110px;">Цена/ед</th>
-              <th style="width:80px;">Score</th>
-
-              <th style="width:320px;">Предложения других поставщиков</th>
-              <th style="width:120px;">Статус</th>
-              <th style="width:120px;"></th>
+              ${suppliers.map((s) => `<th class="supplierTh">${esc(s)}</th>`).join("")}
+              <th style="width:200px;">Выбрано</th>
             </tr>
           </thead>
           <tbody>
     `;
 
     for (const it of rows) {
-      const bench = it.benchmarkOfferId ? getOffer(it, it.benchmarkOfferId) : null;
-
-      const altOffers = it.alternativeOfferIds
-        .map((id) => getOffer(it, id))
+      // compute best ppu among visible offers to highlight
+      const visible = suppliers
+        .map((s) => {
+          const oid = it.compareOffers?.[s] ?? null;
+          const off = oid ? getOffer(it, oid) : null;
+          if (!off || Number(off.score) < MIN_SCORE) return null;
+          return off;
+        })
         .filter(Boolean);
 
-      const altMini =
-        altOffers.length
-          ? `
-            <div class="mini">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Поставщик</th>
-                    <th>Товар</th>
-                    <th style="width:90px;">Цена/ед</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  ${altOffers
-                    .slice(0, 4)
-                    .map(
-                      (o) => `
-                        <tr>
-                          <td>${esc(o.supplier)}</td>
-                          <td>${esc(o.name)}</td>
-                          <td><b>${fmtNum(o.ppu)}</b></td>
-                        </tr>
-                      `
-                    )
-                    .join("")}
-                </tbody>
-              </table>
-            </div>
-          `
-          : `<span class="sub">нет альтернатив</span>`;
+      const bestPpu = visible.length ? Math.min(...visible.map((o) => Number(o.ppu) || 1e9)) : null;
 
-      const status = bench ? `есть эталон` : `нет эталона`;
+      const pickedOff = it.picked ? getOffer(it, it.picked.offerId) : null;
+      const pickedLabel = pickedOff
+        ? `
+          <div><b>${esc(pickedOff.supplier)}</b></div>
+          <div class="sub">${esc(pickedOff.name)}</div>
+          <div style="margin-top:4px;"><b>${fmtNum(pickedOff.ppu)} ₽/ед</b></div>
+        `
+        : `<span class="sub">не выбрано</span>`;
 
       html += `
         <tr>
@@ -592,17 +592,11 @@
           <td>${esc(fmtNum(it.qty, 3))}</td>
           <td>${esc(it.unit)}</td>
 
-          <td>${bench ? esc(bench.supplier) : "—"}</td>
-          <td>${bench ? esc(bench.name) : `<span class="sub">не выбран</span>`}</td>
-          <td>${bench ? `<b>${fmtNum(bench.ppu)}</b>` : ""}</td>
-          <td>${bench ? fmtNum(bench.score, 2) : ""}</td>
+          ${suppliers
+            .map((s) => renderSupplierCell(project, it, s, bestPpu))
+            .join("")}
 
-          <td>${altMini}</td>
-          <td><span class="sub">${esc(status)}</span></td>
-
-          <td>
-            <button class="btn" data-action="variants" data-item="${it.id}">Варианты</button>
-          </td>
+          <td>${pickedLabel}</td>
         </tr>
       `;
     }
@@ -615,14 +609,322 @@
 
     itemsWrap.innerHTML = html;
 
-    // bind modal buttons
-    $$('button[data-action="variants"]', itemsWrap).forEach((btn) => {
-      btn.addEventListener("click", () => {
+    // bind cart remove
+    $$('button[data-action="cart-remove"]', itemsWrap).forEach((btn) => {
+      btn.onclick = () => {
         const itemId = Number(btn.dataset.item);
-        if (!Number.isFinite(itemId)) return;
-        openModal(project.id, itemId);
-      });
+        const it = getItem(project, itemId);
+        if (!it) return;
+        it.picked = null;
+        saveState(state);
+        renderProjectView();
+      };
     });
+
+    // bind cell actions
+    $$('button[data-action="cell-remove"]', itemsWrap).forEach((btn) => {
+      btn.onclick = () => {
+        const itemId = Number(btn.dataset.item);
+        const supplier = decKey(btn.dataset.supplier || "");
+        const it = getItem(project, itemId);
+        if (!it) return;
+
+        const oid = it.compareOffers?.[supplier] ?? null;
+        it.compareOffers[supplier] = null;
+
+        if (it.picked && oid && it.picked.offerId === oid) it.picked = null;
+
+        saveState(state);
+        renderProjectView();
+      };
+    });
+
+    $$('button[data-action="cell-search"]', itemsWrap).forEach((btn) => {
+      btn.onclick = () => {
+        const itemId = Number(btn.dataset.item);
+        const supplier = decKey(btn.dataset.supplier || "");
+        openOfferModal(project.id, itemId, supplier, "cell");
+      };
+    });
+
+    $$('button[data-action="cell-pick"]', itemsWrap).forEach((btn) => {
+      btn.onclick = () => {
+        const itemId = Number(btn.dataset.item);
+        const supplier = decKey(btn.dataset.supplier || "");
+        const it = getItem(project, itemId);
+        if (!it) return;
+
+        const oid = it.compareOffers?.[supplier] ?? null;
+        const off = oid ? getOffer(it, oid) : null;
+
+        if (!off) {
+          // нет позиции — предложим выбрать в модалке
+          openOfferModal(project.id, itemId, supplier, "cart");
+          return;
+        }
+
+        // toggle
+        const isPicked = it.picked && it.picked.offerId === off.id && it.picked.supplier === supplier;
+        it.picked = isPicked ? null : { supplier, offerId: off.id };
+        saveState(state);
+        renderProjectView();
+      };
+    });
+  }
+
+  function renderSupplierCell(project, it, supplier, bestPpu) {
+    const oid = it.compareOffers?.[supplier] ?? null;
+    const off = oid ? getOffer(it, oid) : null;
+
+    const valid = off && Number(off.score) >= MIN_SCORE;
+    const isPicked = valid && it.picked && it.picked.offerId === off.id && it.picked.supplier === supplier;
+    const isBest = valid && bestPpu !== null && Number(off.ppu) === Number(bestPpu);
+
+    const cls = ["supplierCell"];
+    if (isPicked) cls.push("picked");
+    else if (isBest) cls.push("best");
+
+    // If position not found or score too low — do not show the position (only actions)
+    const body = valid
+      ? `
+        <div class="supName">${esc(off.name)}</div>
+        <div class="supMeta">
+          <div class="supPrice">${fmtNum(off.ppu)} ₽/ед</div>
+          <div class="supScore">score ${fmtNum(off.score, 2)}</div>
+        </div>
+      `
+      : `<div class="supEmpty"></div>`;
+
+    return `
+      <td class="${cls.join(" ")}">
+        ${body}
+        <div class="iconRow">
+          <button class="iconBtn" title="Удалить позицию из ячейки" data-action="cell-remove" data-item="${it.id}" data-supplier="${encKey(supplier)}" ${valid ? "" : "disabled"}>✕</button>
+          <button class="iconBtn" title="Найти / выбрать позицию" data-action="cell-search" data-item="${it.id}" data-supplier="${encKey(supplier)}">🔍</button>
+          <button class="iconBtn" title="Выбрать в корзину" data-action="cell-pick" data-item="${it.id}" data-supplier="${encKey(supplier)}">★</button>
+        </div>
+      </td>
+    `;
+  }
+
+  // --- Offer selection modal ---
+  let modalCtx = null; // { projectId, itemId, supplier, openedFor }
+
+  function openOfferModal(projectId, itemId, supplier, openedFor = "cell") {
+    modalCtx = { projectId, itemId, supplier, openedFor };
+
+    const root = document.getElementById(ROOT_ID);
+    const modal = $("#tender-modal", root);
+    if (!modal) return;
+
+    // reset search input
+    const q = $("#tender-search-manual", root);
+    if (q) q.value = "";
+
+    modal.classList.remove("hidden");
+    modal.setAttribute("aria-hidden", "false");
+    renderOfferModal();
+  }
+
+  function closeOfferModal() {
+    const root = document.getElementById(ROOT_ID);
+    const modal = $("#tender-modal", root);
+    if (!modal) return;
+    modal.classList.add("hidden");
+    modal.setAttribute("aria-hidden", "true");
+    modalCtx = null;
+  }
+
+  function renderOfferModal() {
+    const root = document.getElementById(ROOT_ID);
+    if (!root || !modalCtx) return;
+
+    const project = getProject(modalCtx.projectId);
+    if (!project) return;
+
+    const item = getItem(project, modalCtx.itemId);
+    if (!item) return;
+
+    const subtitle = $("#tender-modal-subtitle", root);
+    const supplierLine = $("#tender-modal-supplier", root);
+    const tbody = $("#tender-offers-body", root);
+
+    if (subtitle) subtitle.textContent = `Позиция: ${item.rowNo}. ${item.name} · ${fmtNum(item.qty, 3)} ${item.unit}`;
+    if (supplierLine) supplierLine.textContent = `Поставщик: ${modalCtx.supplier}`;
+
+    const manual = $("#tender-search-manual", root);
+    const q = (manual?.value || "").trim().toLowerCase();
+
+    let offers = [...(item.offers || [])];
+
+    // supplier filter (cell-driven UX)
+    offers = offers.filter((o) => o.supplier === modalCtx.supplier);
+
+    // score threshold
+    offers = offers.filter((o) => Number(o.score) >= MIN_SCORE);
+
+    if (q) {
+      offers = offers.filter((o) => `${o.supplier} ${o.name}`.toLowerCase().includes(q));
+    }
+
+    offers.sort((a, b) => {
+      if ((b.score ?? 0) !== (a.score ?? 0)) return (b.score ?? 0) - (a.score ?? 0);
+      return (a.ppu ?? 1e9) - (b.ppu ?? 1e9);
+    });
+
+    if (!tbody) return;
+
+    if (!offers.length) {
+      tbody.innerHTML = `<tr><td colspan="5" class="sub">Ничего не найдено (или score &lt; ${MIN_SCORE}). Попробуйте другой запрос.</td></tr>`;
+      return;
+    }
+
+    const pickedId = item.picked?.offerId ?? null;
+
+    tbody.innerHTML = offers
+      .map((o) => {
+        const isPicked = pickedId === o.id;
+        return `
+          <tr>
+            <td>${esc(o.supplier)}</td>
+            <td>${esc(o.name)}${isPicked ? ` <span class="tag" style="margin-left:6px;background:#dcfce7;color:#166534;">В корзине</span>` : ""}</td>
+            <td><b>${fmtNum(o.ppu)}</b></td>
+            <td>${fmtNum(o.score, 2)}</td>
+            <td style="white-space:nowrap;">
+              <button class="btn" data-action="modal-choose" data-oid="${o.id}">Выбрать</button>
+              <button class="btn primary" data-action="modal-pick" data-oid="${o.id}" ${isPicked ? "disabled" : ""}>★ В корзину</button>
+            </td>
+          </tr>
+        `;
+      })
+      .join("");
+
+    $$('button[data-action="modal-choose"]', tbody).forEach((btn) => {
+      btn.onclick = () => {
+        const oid = Number(btn.dataset.oid);
+        const off = getOffer(item, oid);
+        if (!off) return;
+
+        item.compareOffers[off.supplier] = off.id;
+        saveState(state);
+        renderProjectView();
+        closeOfferModal();
+      };
+    });
+
+    $$('button[data-action="modal-pick"]', tbody).forEach((btn) => {
+      btn.onclick = () => {
+        const oid = Number(btn.dataset.oid);
+        const off = getOffer(item, oid);
+        if (!off) return;
+
+        item.compareOffers[off.supplier] = off.id;
+        item.picked = { supplier: off.supplier, offerId: off.id };
+
+        saveState(state);
+        renderProjectView();
+        closeOfferModal();
+      };
+    });
+  }
+
+  // --- Suppliers modal ---
+  let suppliersModalProjectId = null;
+
+  function openSuppliersModal(projectId) {
+    suppliersModalProjectId = projectId;
+
+    const root = document.getElementById(ROOT_ID);
+    const modal = $("#tender-suppliers-modal", root);
+    if (!modal) return;
+
+    const search = $("#tender-suppliers-search", root);
+    if (search) search.value = "";
+
+    modal.classList.remove("hidden");
+    modal.setAttribute("aria-hidden", "false");
+
+    renderSuppliersModal();
+  }
+
+  function closeSuppliersModal() {
+    const root = document.getElementById(ROOT_ID);
+    const modal = $("#tender-suppliers-modal", root);
+    if (!modal) return;
+
+    modal.classList.add("hidden");
+    modal.setAttribute("aria-hidden", "true");
+    suppliersModalProjectId = null;
+  }
+
+  function renderSuppliersModal() {
+    const root = document.getElementById(ROOT_ID);
+    if (!root || !suppliersModalProjectId) return;
+
+    const project = getProject(suppliersModalProjectId);
+    if (!project) return;
+
+    const listEl = $("#tender-suppliers-list", root);
+    const search = $("#tender-suppliers-search", root);
+    const q = (search?.value || "").trim().toLowerCase();
+
+    const allSuppliers = listAllSuppliers(project);
+    const selected = new Set(project.selectedSuppliers || []);
+
+    const filtered = q
+      ? allSuppliers.filter((s) => s.toLowerCase().includes(q))
+      : allSuppliers;
+
+    if (!listEl) return;
+
+    listEl.innerHTML = filtered
+      .map((s) => {
+        const checked = selected.has(s);
+        return `
+          <label class="suppliersItem">
+            <input type="checkbox" data-supplier="${encKey(s)}" ${checked ? "checked" : ""}>
+            <span>${esc(s)}</span>
+          </label>
+        `;
+      })
+      .join("");
+
+    // bind checkboxes
+    $$('input[type="checkbox"]', listEl).forEach((cb) => {
+      cb.onchange = () => {
+        const s = decKey(cb.dataset.supplier || "");
+        if (!s) return;
+        if (cb.checked) selected.add(s);
+        else selected.delete(s);
+
+        project.selectedSuppliers = Array.from(selected);
+        state = normalizeState(state);
+        saveState(state);
+
+        // re-render list to keep order stable
+        renderSuppliersModal();
+      };
+    });
+  }
+
+  function applySuppliersSelection() {
+    const root = document.getElementById(ROOT_ID);
+    if (!root || !suppliersModalProjectId) return;
+
+    const project = getProject(suppliersModalProjectId);
+    if (!project) return;
+
+    // read checked values
+    const listEl = $("#tender-suppliers-list", root);
+    const checked = $$('input[type="checkbox"]', listEl).filter((x) => x.checked);
+    const selected = checked.map((x) => decKey(x.dataset.supplier || "")).filter(Boolean);
+
+    project.selectedSuppliers = selected;
+    state = normalizeState(state);
+    saveState(state);
+
+    closeSuppliersModal();
+    renderProjectView();
   }
 
   function exportCSV(project) {
@@ -631,27 +933,31 @@
       "purchase_name",
       "qty",
       "unit",
-      "benchmark_supplier",
-      "benchmark_name",
-      "benchmark_ppu",
-      "benchmark_score",
-      "alternatives_count"
+      "chosen_supplier",
+      "supplier_item_name",
+      "price_per_unit",
+      "score",
+      "amount"
     ];
 
     const lines = [header.join(",")];
+
     for (const it of project.items) {
-      const bench = it.benchmarkOfferId ? getOffer(it, it.benchmarkOfferId) : null;
+      const picked = it.picked ? getOffer(it, it.picked.offerId) : null;
+      const amount = picked ? (Number(it.qty) || 0) * (Number(picked.ppu) || 0) : 0;
+
       const row = [
-        it.rowNo,
-        `"${String(it.name).replaceAll('"', '""')}"`,
-        it.qty,
-        `"${String(it.unit).replaceAll('"', '""')}"`,
-        bench ? `"${String(bench.supplier).replaceAll('"', '""')}"` : "",
-        bench ? `"${String(bench.name).replaceAll('"', '""')}"` : "",
-        bench ? bench.ppu : "",
-        bench ? bench.score : "",
-        it.alternativeOfferIds.length
+        it.rowNo ?? "",
+        `"${String(it.name ?? "").replaceAll('"', '""')}"`,
+        it.qty ?? "",
+        `"${String(it.unit ?? "").replaceAll('"', '""')}"`,
+        picked ? `"${String(picked.supplier).replaceAll('"', '""')}"` : "",
+        picked ? `"${String(picked.name).replaceAll('"', '""')}"` : "",
+        picked ? picked.ppu : "",
+        picked ? picked.score : "",
+        picked ? amount : ""
       ];
+
       lines.push(row.join(","));
     }
 
@@ -659,7 +965,7 @@
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `tender_${project.id}_demo.csv`;
+    a.download = `tender_${project.id}_cart_demo.csv`;
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -670,35 +976,58 @@
     const root = document.getElementById(ROOT_ID);
     if (!root) return;
 
+    // offer modal
     const modal = $("#tender-modal", root);
     const closeBtn = $("#tender-modal-close", root);
     const searchBtn = $("#tender-search-btn", root);
     const resetBtn = $("#tender-search-reset", root);
 
-    closeBtn?.addEventListener("click", closeModal);
-    modal?.addEventListener("click", (e) => {
-      if (e.target === modal) closeModal();
-    });
+    closeBtn && (closeBtn.onclick = closeOfferModal);
+    modal &&
+      modal.addEventListener("click", (e) => {
+        if (e.target === modal) closeOfferModal();
+      });
 
-    // search controls just re-render modal with current inputs
-    searchBtn?.addEventListener("click", () => renderModal());
-    resetBtn?.addEventListener("click", () => {
-      const manual = $("#tender-search-manual", root);
-      const base = $("#tender-search-base", root);
-      if (manual) manual.value = "";
-      if (base) base.value = "purchase";
-      renderModal();
-    });
+    searchBtn && (searchBtn.onclick = () => renderOfferModal());
+    resetBtn &&
+      (resetBtn.onclick = () => {
+        const manual = $("#tender-search-manual", root);
+        if (manual) manual.value = "";
+        renderOfferModal();
+      });
 
-    // close on ESC
+    // suppliers modal
+    const sModal = $("#tender-suppliers-modal", root);
+    const sClose = $("#tender-suppliers-close", root);
+    const sApply = $("#tender-suppliers-apply", root);
+    const sSearch = $("#tender-suppliers-search", root);
+
+    sClose && (sClose.onclick = closeSuppliersModal);
+    sApply && (sApply.onclick = applySuppliersSelection);
+    sSearch && (sSearch.oninput = () => renderSuppliersModal());
+
+    sModal &&
+      sModal.addEventListener("click", (e) => {
+        if (e.target === sModal) closeSuppliersModal();
+      });
+
+    // close on ESC (both modals)
     document.addEventListener("keydown", (e) => {
-      if (e.key === "Escape" && modal && !modal.classList.contains("hidden")) closeModal();
+      if (e.key !== "Escape") return;
+
+      const offerOpen = modal && !modal.classList.contains("hidden");
+      const suppOpen = sModal && !sModal.classList.contains("hidden");
+
+      if (offerOpen) closeOfferModal();
+      else if (suppOpen) closeSuppliersModal();
     });
   }
 
   function render() {
     const root = document.getElementById(ROOT_ID);
     if (!root) return;
+
+    ensureStyles();
 
     const route = parseRoute();
     if (route.page === "other") return;
@@ -722,16 +1051,15 @@
     }
   }
 
-  // boot
   document.addEventListener("DOMContentLoaded", () => {
     const root = document.getElementById(ROOT_ID);
     if (!root) return;
 
     state = loadState();
+    ensureStyles();
     bindModalUI();
     render();
 
     window.addEventListener("popstate", () => render());
   });
 })();
-
