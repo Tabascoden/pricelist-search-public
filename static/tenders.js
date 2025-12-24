@@ -14,11 +14,12 @@
     selectedSupplierIds: [],
     matrix: {},                 // { [itemId]: { [supplierId]: match } }
     blocked: {},                // { ["itemId:supplierId"]: true }
-    matchModal: { open: false, itemId: null, supplierId: null, rows: [], loading: false },
+    matchModal: { open: false, itemId: null, supplierId: null, rows: [], loading: false, query: "" },
     suppliersDropdownOpen: false,
     loading: false,
     error: null,
   };
+  let matchSearchTimer = null;
 
   // ---------- utils ----------
   const $ = (sel, root = document) => root.querySelector(sel);
@@ -223,14 +224,19 @@
   }
 
   function openMatchModal(itemId, supplierId) {
-    state.matchModal = { open: true, itemId, supplierId, rows: [], loading: true };
+    state.matchModal = { open: true, itemId, supplierId, rows: [], loading: true, query: "" };
     $("#tenders-match-modal").classList.remove("hidden");
 
     const item = state.project?.items?.find(x => Number(x.id) === Number(itemId));
     $("#tenders-match-title").textContent = `${getSupplierName(supplierId)} — подбор`;
     $("#tenders-match-sub").textContent = item ? `Нужно: ${item.name_input} (кол-во: ${item.qty ?? "—"} ${item.unit_input ?? ""})` : "";
+    const searchInput = $("#tenders-match-search");
+    if (searchInput) {
+      searchInput.value = "";
+      searchInput.focus();
+    }
 
-    loadMatches(itemId, supplierId).catch(() => {}).finally(() => {
+    loadMatches(itemId, supplierId, "").catch(() => {}).finally(() => {
       state.matchModal.loading = false;
       renderMatchModal();
     });
@@ -238,12 +244,29 @@
   }
 
   function closeMatchModal() {
-    state.matchModal = { open: false, itemId: null, supplierId: null, rows: [], loading: false };
+    state.matchModal = { open: false, itemId: null, supplierId: null, rows: [], loading: false, query: "" };
     $("#tenders-match-modal").classList.add("hidden");
   }
 
-  async function loadMatches(itemId, supplierId) {
-    const j = await apiJson(`/api/tenders/items/${itemId}/matches?supplier_id=${encodeURIComponent(supplierId)}&limit=25`);
+  async function runMatchSearch(query) {
+    if (!state.matchModal.open) return;
+    const itemId = state.matchModal.itemId;
+    const supplierId = state.matchModal.supplierId;
+    if (itemId == null || supplierId == null) return;
+
+    state.matchModal.query = query;
+    state.matchModal.loading = true;
+    renderMatchModal();
+
+    await loadMatches(itemId, supplierId, query).catch(() => {});
+    state.matchModal.loading = false;
+    renderMatchModal();
+  }
+
+  async function loadMatches(itemId, supplierId, query) {
+    const q = (query || "").trim();
+    const search = q ? `&q=${encodeURIComponent(q)}` : "";
+    const j = await apiJson(`/api/tenders/items/${itemId}/matches?supplier_id=${encodeURIComponent(supplierId)}&limit=25${search}`);
     state.matchModal.rows = j.matches || [];
   }
 
@@ -790,6 +813,25 @@
     });
 
     $("#tenders-match-close")?.addEventListener("click", () => closeMatchModal());
+    const matchSearchInput = $("#tenders-match-search");
+    const matchSearchBtn = $("#tenders-match-search-btn");
+    matchSearchInput?.addEventListener("input", () => {
+      clearTimeout(matchSearchTimer);
+      matchSearchTimer = setTimeout(() => {
+        runMatchSearch(matchSearchInput.value);
+      }, 350);
+    });
+    matchSearchInput?.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter") return;
+      e.preventDefault();
+      clearTimeout(matchSearchTimer);
+      runMatchSearch(matchSearchInput.value);
+    });
+    matchSearchBtn?.addEventListener("click", () => {
+      if (!matchSearchInput) return;
+      clearTimeout(matchSearchTimer);
+      runMatchSearch(matchSearchInput.value);
+    });
 
     document.addEventListener("click", (e) => {
       if (!state.suppliersDropdownOpen) return;

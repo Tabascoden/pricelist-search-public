@@ -1147,6 +1147,7 @@ def create_app() -> Flask:
     def api_tenders_matches(item_id: int):
         supplier_id = request.args.get("supplier_id")
         limit = request.args.get("limit") or "25"
+        q_input = (request.args.get("q") or "").strip()
         try:
             supplier_id = int(supplier_id) if supplier_id is not None else None
         except Exception:
@@ -1173,6 +1174,9 @@ def create_app() -> Flask:
                     item = cur.fetchone()
                     if not item:
                         return jsonify({"error": "not found"}), 404
+                    q_filter = q_input or None
+                    q_similarity = q_filter or (item.get("name_input") or "")
+                    q_like = f"%{q_filter}%" if q_filter else None
                     cur.execute(
                         """
                         SELECT
@@ -1189,6 +1193,7 @@ def create_app() -> Flask:
                         WHERE si.supplier_id=%(supplier_id)s
                           AND si.is_active IS TRUE
                           AND (%(category_id)s IS NULL OR si.category_id = %(category_id)s)
+                          AND (%(q_filter)s IS NULL OR coalesce(si.name_normalized, si.name_raw) ILIKE %(q_like)s)
                         ORDER BY similarity(coalesce(si.name_normalized, si.name_raw), %(q)s) DESC,
                                  si.price_per_unit ASC NULLS LAST,
                                  si.id DESC
@@ -1197,7 +1202,9 @@ def create_app() -> Flask:
                         {
                             "supplier_id": supplier_id,
                             "category_id": item.get("category_id"),
-                            "q": item.get("name_input"),
+                            "q": q_similarity,
+                            "q_filter": q_filter,
+                            "q_like": q_like,
                             "limit": limit_i,
                         },
                     )
