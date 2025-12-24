@@ -45,6 +45,19 @@
     return `${fmtNum(n, 2)} ₽`;
   };
 
+  const parseQtyValue = (value) => {
+    const raw = String(value ?? "").trim();
+    if (!raw) {
+      throw new Error("invalid qty");
+    }
+    const normalized = raw.replace(",", ".");
+    const n = Number(normalized);
+    if (!Number.isFinite(n)) {
+      throw new Error("invalid qty");
+    }
+    return n;
+  };
+
   function parsePath() {
     const p = (location.pathname || "").replace(/\/+$/, "");
     const m = p.match(/^\/tenders(?:\/(\d+))?$/);
@@ -346,6 +359,24 @@
     await reloadProjectHard();
   }
 
+  async function updateTenderItem(itemId, payload) {
+    await apiJson(`/api/tenders/items/${itemId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async function addTenderItem(payload) {
+    const pid = state.project?.id;
+    if (!pid) return;
+    await apiJson(`/api/tenders/${pid}/items`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  }
+
   async function clearFromCart(itemId) {
     const pid = state.project?.id;
     if (!pid) return;
@@ -564,6 +595,7 @@
           (!picked && bestSid === sid) ? "best" : ""
         ].filter(Boolean).join(" ");
 
+        const starClass = picked ? "iconBtn star-picked" : "iconBtn";
         return `
           <td class="${cls}">
             <div class="supName">${esc(m.name_raw || "")}</div>
@@ -574,17 +606,28 @@
             <div class="iconRow">
               <button class="iconBtn" title="Скрыть" data-block="${esc(key)}">✕</button>
               <button class="iconBtn" title="Найти другой" data-find="1" data-item-id="${esc(it.id)}" data-supplier-id="${esc(sid)}">🔍</button>
-              <button class="iconBtn" title="Выбрать в корзину" data-pick="1" data-item-id="${esc(it.id)}" data-supplier-item-id="${esc(m.supplier_item_id)}">★</button>
+              <button class="${starClass}" title="Выбрать в корзину" data-pick="1" data-item-id="${esc(it.id)}" data-supplier-item-id="${esc(m.supplier_item_id)}">★</button>
             </div>
           </td>
         `;
       }).join("");
 
+      const qtyValue = it.qty != null ? String(it.qty) : "";
       return `
         <tr>
           <td>${esc(it.row_no ?? "")}</td>
           <td><b>${esc(it.name_input || "")}</b></td>
-          <td>${esc(fmtNum(it.qty, 3))}</td>
+          <td>
+            <input
+              class="input input-qty"
+              type="number"
+              min="0"
+              step="0.001"
+              data-qty-item-id="${esc(it.id)}"
+              data-qty-value="${esc(qtyValue)}"
+              value="${esc(qtyValue)}"
+            />
+          </td>
           <td>${esc(it.unit_input || "")}</td>
           ${rowCells}
         </tr>
@@ -626,6 +669,32 @@
         const supplierItemId = Number(btn.getAttribute("data-supplier-item-id"));
         await pickToCart(itemId, supplierItemId);
       };
+    });
+
+    $$("[data-qty-item-id]", tbl).forEach(input => {
+      input.addEventListener("change", async () => {
+        const itemId = Number(input.getAttribute("data-qty-item-id"));
+        const prev = input.getAttribute("data-qty-value") ?? "";
+        const current = (input.value || "").trim();
+        if (current === prev) return;
+        let qtyVal = null;
+        try {
+          qtyVal = parseQtyValue(current);
+        } catch {
+          alert("Введите корректное количество.");
+          input.value = prev;
+          return;
+        }
+        input.disabled = true;
+        try {
+          await updateTenderItem(itemId, { qty: qtyVal });
+          await reloadProjectHard();
+        } catch (e) {
+          alert("Не удалось обновить количество.");
+          input.disabled = false;
+          input.value = prev;
+        }
+      });
     });
   }
 
@@ -768,6 +837,42 @@
         if (id) location.href = `/tenders/${id}`;
       };
     }
+
+    const addForm = $("#tenders-add-item-form");
+    addForm?.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const pid = state.project?.id;
+      if (!pid) return;
+      const nameInput = $("#tenders-add-name");
+      const qtyInput = $("#tenders-add-qty");
+      const unitInput = $("#tenders-add-unit");
+      const name = (nameInput?.value || "").trim();
+      if (!name) {
+        alert("Введите номенклатуру.");
+        return;
+      }
+      let qtyVal = null;
+      try {
+        qtyVal = parseQtyValue(qtyInput?.value || "");
+      } catch {
+        alert("Введите корректное количество.");
+        return;
+      }
+      const unitVal = (unitInput?.value || "").trim();
+      try {
+        await addTenderItem({
+          name_input: name,
+          qty: qtyVal,
+          unit_input: unitVal || null,
+        });
+        if (nameInput) nameInput.value = "";
+        if (qtyInput) qtyInput.value = "";
+        if (unitInput) unitInput.value = "";
+        await reloadProjectHard();
+      } catch (e) {
+        alert("Не удалось добавить позицию.");
+      }
+    });
 
     $("#tenders-export-btn")?.addEventListener("click", async () => {
       const pid = state.project?.id;
