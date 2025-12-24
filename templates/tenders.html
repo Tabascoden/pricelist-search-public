@@ -5,7 +5,7 @@
   <div class="cardHeader tender-flex">
     <div>
       <h1>Тендеры</h1>
-      <div class="sub">Демо-визуализация (без БД/SQL). Логика и UX.</div>
+      <div class="sub">UX-страница сравнения цен выбранных поставщиков (демо UI, localStorage).</div>
     </div>
 
     <form id="tender-create-form" class="tender-flex tender-form" autocomplete="off">
@@ -31,52 +31,45 @@
       <div class="tender-title">
         <div class="h2" id="tender-project-title">Тендер</div>
         <div class="sub" id="tender-project-subtitle">
-          Сравнение предложений разных поставщиков. Эталон и альтернативы.
+          Сравнение выбранных поставщиков: в ячейках показываем “товар поставщика + цена/ед”. Плохие совпадения (score &lt; 0.3) скрываем.
         </div>
       </div>
 
       <div class="tender-actions">
         <input type="file" id="tender-upload" accept=".xlsx" style="max-width:220px;">
         <button class="btn" id="tender-upload-btn">Загрузить XLSX</button>
+        <button class="btn" id="tender-suppliers-btn">Выбрать поставщиков</button>
         <button class="btn" id="tender-autopick">Автоподбор</button>
         <button class="btn primary" id="tender-export">Экспорт</button>
       </div>
     </div>
 
     <div class="tender-hint">
-      <span class="tag">Логика</span>
-      1) Ищем кандидатов по строке закупки. 2) Пользователь выбирает «Эталон». 3) Дальше альтернативы ищем по эталону.
-      Везде «Поставщик» — отдельным столбцом.
+      <span class="tag">UX</span>
+      После «Ед.» идут столбцы выбранных поставщиков.
+      В каждой ячейке: ✕ удалить найденное, 🔍 найти/выбрать вручную, ★ выбрать в корзину (ячейка становится зелёной).
     </div>
 
     <div id="tender-items" class="tender-table-wrap">Загрузка…</div>
   </div>
 
-  <!-- MODAL -->
+  <!-- OFFER MODAL -->
   <div class="tender-modal hidden" id="tender-modal" aria-hidden="true">
     <div class="tender-modal-body" role="dialog" aria-modal="true">
       <div class="tender-modal-header">
         <div>
-          <div class="h3">Варианты поставщиков</div>
+          <div class="h3">Выбор позиции поставщика</div>
           <div class="sub" id="tender-modal-subtitle">Позиция: …</div>
+          <div class="sub" id="tender-modal-supplier">Поставщик: …</div>
         </div>
         <button class="btn" id="tender-modal-close">Закрыть</button>
       </div>
 
       <div class="tender-modal-controls">
         <div class="tender-control">
-          <div class="tender-control-title">Ручной поиск</div>
+          <div class="tender-control-title">Поиск</div>
           <input class="input" id="tender-search-manual" placeholder="Например: помидоры сливовидные">
-          <div class="sub">Если заполнено — ищем по этой строке, независимо от «основы поиска».</div>
-        </div>
-
-        <div class="tender-control">
-          <div class="tender-control-title">Основа поиска</div>
-          <select class="input" id="tender-search-base">
-            <option value="purchase">По строке закупки</option>
-            <option value="benchmark">По эталону</option>
-          </select>
-          <div class="sub" id="tender-search-base-hint">Ищем по строке закупки (первичный подбор альтернатив).</div>
+          <div class="sub">Фильтрует по названию товара (в рамках выбранного поставщика).</div>
         </div>
 
         <div class="tender-control-actions">
@@ -86,39 +79,52 @@
       </div>
 
       <div class="tender-legend">
-        <div class="tender-legend-title">Текущий эталон</div>
-        <div id="tender-benchmark-box" class="tender-benchmark-box">
-          Эталон ещё не выбран. Найдите кандидатов и нажмите «Сделать эталоном».
-        </div>
-      </div>
-
-      <div class="tender-legend">
-        <div class="tender-legend-title">
-          Результаты поиска / кандидаты
-          <span class="sub" id="tender-candidates-mode">— режим: по строке закупки</span>
-        </div>
+        <div class="tender-legend-title">Кандидаты (score ≥ 0.3)</div>
 
         <div class="tableWrap">
           <table class="tender-offers-table" id="tender-offers-table">
             <thead>
               <tr>
-                <th class="sortable" data-sort="supplier">Поставщик</th>
-                <th class="sortable" data-sort="name">Товар</th>
-                <th class="sortable" data-sort="price">Цена</th>
-                <th class="sortable" data-sort="ppu">Цена/ед</th>
-                <th class="sortable" data-sort="score">Score</th>
-                <th>Действия</th>
+                <th>Поставщик</th>
+                <th>Товар</th>
+                <th style="width:120px;">Цена/ед</th>
+                <th style="width:90px;">Score</th>
+                <th style="width:220px;">Действия</th>
               </tr>
             </thead>
             <tbody id="tender-offers-body">
-              <tr><td colspan="6" class="sub">Нажмите «Найти».</td></tr>
+              <tr><td colspan="5" class="sub">Введите запрос и нажмите «Найти».</td></tr>
             </tbody>
           </table>
         </div>
 
         <div class="sub" style="margin-top:10px;">
-          Сортировка: клик по заголовку столбца. Повторный клик меняет направление.
+          «Выбрать» — поставить позицию в ячейку сравнения. «★ В корзину» — выбрать поставщика для этой строки закупки.
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- SUPPLIERS MODAL -->
+  <div class="tender-modal hidden" id="tender-suppliers-modal" aria-hidden="true">
+    <div class="tender-modal-body" role="dialog" aria-modal="true">
+      <div class="tender-modal-header">
+        <div>
+          <div class="h3">Выбор поставщиков для сравнения</div>
+          <div class="sub">Отметьте поставщиков — они появятся столбцами в таблице.</div>
+        </div>
+        <button class="btn" id="tender-suppliers-close">Закрыть</button>
+      </div>
+
+      <div class="tender-control" style="margin-top:12px;">
+        <div class="tender-control-title">Поиск поставщика</div>
+        <input class="input" id="tender-suppliers-search" placeholder="Начните вводить название…">
+      </div>
+
+      <div id="tender-suppliers-list" class="suppliersList">Загрузка…</div>
+
+      <div class="suppliersActions">
+        <button class="btn primary" id="tender-suppliers-apply">Применить</button>
       </div>
     </div>
   </div>
@@ -185,20 +191,6 @@
     display:flex; flex-direction:column; gap:8px; align-items:flex-end;
   }
 
-  #tenders-demo .mini {
-    width:100%;
-    border:1px solid #e6ebff;
-    border-radius: 12px;
-    overflow:hidden;
-  }
-  #tenders-demo .mini table { width:100%; border-collapse:collapse; }
-  #tenders-demo .mini td, #tenders-demo .mini th {
-    padding: 8px 10px;
-    border-bottom: 1px solid #eef2ff;
-    font-size: 12px;
-  }
-  #tenders-demo .mini th { background:#f3f6ff; color:#334155; text-transform:none; letter-spacing:0; }
-
   #tenders-demo .tender-modal {
     position: fixed; inset: 0;
     background: rgba(0,0,0,0.35);
@@ -225,7 +217,7 @@
   }
   #tenders-demo .tender-modal-controls {
     display:grid;
-    grid-template-columns: 1fr 1fr auto;
+    grid-template-columns: 1fr auto;
     gap: 12px;
     align-items:end;
     margin-bottom: 14px;
@@ -248,14 +240,6 @@
 
   #tenders-demo .tender-legend { margin-top: 10px; }
   #tenders-demo .tender-legend-title { font-weight: 800; margin-bottom: 8px; }
-  #tenders-demo .tender-benchmark-box {
-    border: 1px solid #e6ebff;
-    border-radius: 14px;
-    padding: 10px 12px;
-    background: #ffffff;
-    color: #334155;
-    font-size: 13px;
-  }
 
   #tenders-demo .tender-offers-table { width:100%; border-collapse: collapse; }
   #tenders-demo .tender-offers-table th, #tenders-demo .tender-offers-table td {
@@ -266,8 +250,6 @@
     vertical-align: top;
   }
   #tenders-demo .tender-offers-table th { background:#f8fafc; color:#475569; font-size:12px; text-transform: uppercase; }
-  #tenders-demo th.sortable { cursor:pointer; user-select:none; }
-  #tenders-demo th.sortable:hover { background:#f1f5f9; }
 
   @media (max-width: 900px) {
     #tenders-demo .tender-modal-controls { grid-template-columns: 1fr; }
