@@ -693,12 +693,19 @@ def create_app() -> Flask:
     @app.route("/api/tenders", methods=["POST"])
     def api_tenders_create():
         upload = request.files.get("file")
-        if not upload:
-            return jsonify({"error": "file is required"}), 400
-        title = (request.form.get("title") or upload.filename or "Тендер").strip() or "Тендер"
+        title = (request.form.get("title") or (upload.filename if upload else None) or "Тендер").strip() or "Тендер"
         try:
             with db_connect() as conn:
                 ensure_schema_compare(conn)
+                if not upload:
+                    with conn.cursor() as cur:
+                        cur.execute("INSERT INTO tender_projects(title) VALUES (%s) RETURNING id;", (title,))
+                        pid = _scalar(cur.fetchone(), "id")
+                    conn.commit()
+                    with db_connect() as conn2:
+                        proj = _load_project(conn2, pid)
+                    return jsonify({"project": proj})
+
                 category_map = get_category_map(conn)
                 df = pd.read_excel(upload.stream)
                 cols = {str(c).strip().lower(): idx for idx, c in enumerate(df.columns)}

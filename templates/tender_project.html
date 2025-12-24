@@ -4,10 +4,17 @@
 <div class="card" id="tenders-demo">
   <div class="tender-flex">
     <div class="h2">Тендеры</div>
-    <form class="tender-form" id="tenders-upload-form" enctype="multipart/form-data">
-      <input type="file" name="file" required />
-      <button class="btn" type="submit">Загрузить</button>
-    </form>
+    <div class="tender-actions-bar">
+      <form class="tender-form" id="tenders-create-form">
+        <input class="input" type="text" name="title" placeholder="Название тендера" required />
+        <button class="btn primary" type="submit">Создать</button>
+      </form>
+      <form class="tender-form" id="tenders-upload-form" enctype="multipart/form-data">
+        <input class="input" type="text" name="title" placeholder="Название (опц.)" />
+        <input type="file" name="file" required />
+        <button class="btn" type="submit">Загрузить</button>
+      </form>
+    </div>
   </div>
 
   <div id="tenders-view-list">
@@ -40,7 +47,26 @@
       </div>
 
       <div class="tender-actions">
-        <button class="btn" id="tenders-pick-suppliers-btn">Выбрать поставщиков</button>
+        <div class="tender-dropdown-wrap">
+          <button class="btn" id="tenders-pick-suppliers-btn" type="button">Выбрать поставщиков</button>
+          <div class="tender-dropdown hidden" id="tenders-suppliers-dropdown">
+            <div class="tender-dropdown-header">
+              <div class="h3">Выбор поставщиков для сравнения</div>
+              <button class="btn" id="tenders-suppliers-close" type="button">Закрыть</button>
+            </div>
+            <div class="tender-dropdown-controls">
+              <label class="tender-control">
+                <div class="tender-control-title">Поиск</div>
+                <input class="input" id="tenders-suppliers-search" placeholder="Начни вводить название..." />
+              </label>
+            </div>
+            <div class="suppliersList" id="tenders-suppliers-list"></div>
+            <div class="suppliersActions">
+              <button class="btn" id="tenders-suppliers-clear" type="button">Снять всё</button>
+              <button class="btn primary" id="tenders-suppliers-apply" type="button">Применить</button>
+            </div>
+          </div>
+        </div>
         <button class="btn primary" id="tenders-build-orders-btn">Собрать заказ(ы)</button>
         <button class="btn" id="tenders-export-btn">Экспорт</button>
         <button class="btn danger" id="tenders-delete-btn">Удалить тендер</button>
@@ -65,30 +91,6 @@
       <div id="tenders-cart"></div>
       <div style="margin-top:10px;" id="tenders-totals"></div>
       <div style="margin-top:10px;" id="tenders-orders"></div>
-    </div>
-  </div>
-
-  <!-- Модалка выбора поставщиков -->
-  <div class="tender-modal hidden" id="tenders-suppliers-modal">
-    <div class="tender-modal-body">
-      <div class="tender-modal-header">
-        <div class="h3">Выбор поставщиков для сравнения</div>
-        <button class="btn" id="tenders-suppliers-close">Закрыть</button>
-      </div>
-
-      <div class="tender-modal-controls" style="grid-template-columns: 1fr;">
-        <label class="tender-control">
-          <div class="tender-control-title">Поиск</div>
-          <input class="input" id="tenders-suppliers-search" placeholder="Начни вводить название..." />
-        </label>
-      </div>
-
-      <div class="suppliersList" id="tenders-suppliers-list"></div>
-
-      <div class="suppliersActions">
-        <button class="btn" id="tenders-suppliers-clear">Снять всё</button>
-        <button class="btn primary" id="tenders-suppliers-apply">Применить</button>
-      </div>
     </div>
   </div>
 
@@ -128,7 +130,8 @@
 <style>
   #tenders-demo .hidden { display:none !important; }
   #tenders-demo .tender-flex { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
-  #tenders-demo .tender-form { margin-left:auto; display:flex; gap:10px; align-items:center; }
+  #tenders-demo .tender-actions-bar { margin-left:auto; display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  #tenders-demo .tender-form { display:flex; gap:10px; align-items:center; }
   #tenders-demo .tender-topbar { display:flex; gap:14px; align-items:flex-start; justify-content:space-between; flex-wrap:wrap; }
   #tenders-demo .tender-title { flex: 1 1 auto; min-width: 240px; }
   #tenders-demo .h2 { font-size: 20px; font-weight: 800; }
@@ -142,6 +145,14 @@
   #tenders-demo .tender-actions-col { display:flex; gap:10px; align-items:center; justify-content:flex-end; }
   #tenders-demo .primary { background:#111827; color:white; border-color:#111827; }
   #tenders-demo .danger { background:#fee2e2; color:#991b1b; border-color:#fecaca; }
+  #tenders-demo .tender-dropdown-wrap { position: relative; }
+  #tenders-demo .tender-dropdown { position: absolute; top: calc(100% + 8px); right: 0; width: 420px; background: #fff; border: 1px solid #e2e8f0; border-radius: 14px; box-shadow: 0 16px 30px rgba(15, 23, 42, 0.12); padding: 12px; z-index: 20; }
+  #tenders-demo .tender-dropdown-header { display:flex; align-items:center; justify-content:space-between; gap:10px; }
+  #tenders-demo .tender-dropdown-controls { margin-top: 8px; }
+
+  #tenders-demo .tender-modal { position: fixed; inset: 0; background: rgba(15, 23, 42, 0.5); display:flex; align-items:center; justify-content:center; padding: 20px; z-index: 30; }
+  #tenders-demo .tender-modal-body { background: #fff; border-radius: 16px; padding: 16px; max-width: 900px; width: min(900px, 100%); max-height: 85vh; overflow: auto; box-shadow: 0 18px 35px rgba(15, 23, 42, 0.2); }
+  #tenders-demo .tender-modal-header { display:flex; align-items:center; justify-content:space-between; gap:12px; }
 
   #tenders-demo .supplierTh { width: 260px; min-width:260px; }
   #tenders-demo .supplierCell { width: 260px; min-width:260px; }
@@ -177,6 +188,8 @@
   #tenders-demo .suppliersActions { display:flex; gap:10px; justify-content:flex-end; margin-top: 12px; }
 
   @media (max-width: 880px){
+    #tenders-demo .tender-actions-bar { width: 100%; justify-content:flex-end; }
+    #tenders-demo .tender-dropdown { position: static; width: 100%; box-shadow: none; margin-top: 10px; }
     #tenders-demo .suppliersList { grid-template-columns: 1fr; }
   }
 </style>
