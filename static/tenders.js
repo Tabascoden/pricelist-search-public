@@ -542,7 +542,7 @@
         <tr>
           <th style="width:70px;">№</th>
           <th style="min-width:260px;">Номенклатура</th>
-          <th style="width:110px;">Кол-во</th>
+          <th style="width:70px;">Кол-во</th>
           <th style="width:90px;">Ед.</th>
           ${supplierIds.map(id => `<th class="supplierTh">${esc(getSupplierName(id))}</th>`).join("")}
         </tr>
@@ -870,7 +870,7 @@
           if (id) {
             const modal = $("#tenders-modal");
             modal?.classList.add("hidden");
-            location.href = `/tenders/${id}`;
+            location.href = "/tenders";
           }
         } catch (e) {
           alert("Не удалось создать тендер.");
