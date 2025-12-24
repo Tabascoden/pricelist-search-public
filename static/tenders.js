@@ -452,9 +452,9 @@
           </td>
           <td data-label="Позиции"><span class="badge">${esc(count)}</span></td>
           <td data-label="Действия">
-            <div class="tender-actions-row">
-              <a class="btn primary" href="/tenders/${esc(p.id)}">Открыть</a>
-              <button class="btn danger" data-del="${esc(p.id)}">Удалить</button>
+            <div style="display:flex; gap:8px;">
+              <a class="btn primary" style="height:36px; padding:0 12px;" href="/tenders/${esc(p.id)}">Открыть</a>
+              <button class="btn danger" style="height:36px; padding:0 12px;" data-del="${esc(p.id)}" title="Удалить">✕</button>
             </div>
           </td>
         </tr>
@@ -838,10 +838,18 @@
     if (uploadForm) {
       uploadForm.onsubmit = async (e) => {
         e.preventDefault();
-        const fd = new FormData(uploadForm);
-        const j = await apiJson("/api/tenders", { method: "POST", body: fd });
-        const id = j?.project?.id;
-        if (id) location.href = `/tenders/${id}`;
+        try {
+          const fd = new FormData(uploadForm);
+          const j = await apiJson("/api/tenders", { method: "POST", body: fd });
+          const id = j?.project?.id;
+          if (id) {
+            const modal = $("#tenders-modal");
+            modal?.classList.add("hidden");
+            location.href = `/tenders/${id}`;
+          }
+        } catch (e) {
+          alert("Не удалось создать тендер.");
+        }
       };
     }
     const fileInput = $("#tenders-file-input");
@@ -852,6 +860,25 @@
         fileName.textContent = name;
       });
     }
+    const addBtn = $("#btnAddTender");
+    const modal = $("#tenders-modal");
+    const titleInput = $("#tenders-title-input");
+    const cancelBtn = $("#tenders-modal-cancel");
+    addBtn?.addEventListener("click", () => {
+      if (titleInput) titleInput.value = "";
+      if (fileInput) fileInput.value = "";
+      if (fileName) fileName.textContent = "Файл не выбран";
+      modal?.classList.remove("hidden");
+      titleInput?.focus();
+    });
+    cancelBtn?.addEventListener("click", () => {
+      modal?.classList.add("hidden");
+    });
+    modal?.addEventListener("click", (event) => {
+      if (event.target === modal) {
+        modal.classList.add("hidden");
+      }
+    });
 
     const addForm = $("#tenders-add-item-form");
     addForm?.addEventListener("submit", async (e) => {
