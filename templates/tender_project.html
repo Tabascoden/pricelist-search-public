@@ -1,272 +1,183 @@
-{% extends 'base.html' %}
+{% extends "base.html" %}
 {% block content %}
 
 <div class="card" id="tenders-demo">
-  <div class="cardHeader tender-flex">
-    <div>
-      <h1>Тендеры</h1>
-      <div class="sub">UX-страница сравнения цен выбранных поставщиков (демо UI, localStorage).</div>
-    </div>
-
-    <form id="tender-create-form" class="tender-flex tender-form" autocomplete="off">
-      <input type="text" name="title" id="tender-title" class="input" placeholder="Название проекта (опционально)">
-      <button class="btn primary" type="submit" id="tender-create-btn">Создать</button>
+  <div class="tender-flex">
+    <div class="h2">Тендеры</div>
+    <form class="tender-form" id="tenders-upload-form" enctype="multipart/form-data">
+      <input type="file" name="file" required />
+      <button class="btn" type="submit">Загрузить</button>
     </form>
   </div>
 
   <div id="tenders-view-list">
-    <div class="tender-hint">
-      <span class="tag">Демо</span>
-      «Открыть» ведёт на <code>/tenders/&lt;id&gt;</code> (в демо — без перезагрузки). «Удалить» удаляет только в UI (localStorage).
+    <div class="tender-hint" style="margin-top:8px;">
+      «Открыть» ведёт на <code>/tenders/&lt;id&gt;</code>.
     </div>
-    <div id="tender-projects" class="tender-table-wrap">Загрузка…</div>
+
+    <div class="tender-table-wrap" style="margin-top:12px;">
+      <div class="tender-grid">
+        <table>
+          <thead>
+            <tr>
+              <th style="width:80px;">ID</th>
+              <th>Название</th>
+              <th style="width:120px;">Позиции</th>
+              <th class="tender-actions-col" style="width:220px;">Действия</th>
+            </tr>
+          </thead>
+          <tbody id="tenders-list-body"></tbody>
+        </table>
+      </div>
+    </div>
   </div>
 
   <div id="tenders-view-project" class="hidden">
     <div class="tender-topbar">
-      <button class="btn" id="tender-back">← Назад к списку</button>
-
       <div class="tender-title">
-        <div class="h2" id="tender-project-title">Тендер</div>
-        <div class="sub" id="tender-project-subtitle">
-          Сравнение выбранных поставщиков: в ячейках показываем “товар поставщика + цена/ед”. Плохие совпадения (score &lt; 0.3) скрываем.
-        </div>
+        <div class="h2" id="tenders-project-title">Тендер</div>
+        <div class="tender-hint" id="tenders-project-meta"></div>
       </div>
 
       <div class="tender-actions">
-        <input type="file" id="tender-upload" accept=".xlsx" style="max-width:220px;">
-        <button class="btn" id="tender-upload-btn">Загрузить XLSX</button>
-        <button class="btn" id="tender-suppliers-btn">Выбрать поставщиков</button>
-        <button class="btn" id="tender-autopick">Автоподбор</button>
-        <button class="btn primary" id="tender-export">Экспорт</button>
+        <button class="btn" id="tenders-pick-suppliers-btn">Выбрать поставщиков</button>
+        <button class="btn primary" id="tenders-build-orders-btn">Собрать заказ(ы)</button>
+        <button class="btn" id="tenders-export-btn">Экспорт</button>
+        <button class="btn danger" id="tenders-delete-btn">Удалить тендер</button>
       </div>
     </div>
 
-    <div class="tender-hint">
-      <span class="tag">UX</span>
-      После «Ед.» идут столбцы выбранных поставщиков.
-      В каждой ячейке: ✕ удалить найденное, 🔍 найти/выбрать вручную, ★ выбрать в корзину (ячейка становится зелёной).
+    <div id="tenders-selected-suppliers" class="tender-legend"></div>
+
+    <div class="tender-grid" style="margin-top:12px;">
+      <table id="tenders-project-table"></table>
     </div>
 
-    <div id="tender-items" class="tender-table-wrap">Загрузка…</div>
+    <div class="card" style="margin-top:14px;">
+      <div class="cartTop">
+        <div>
+          <div class="cartTitle">Корзина</div>
+          <div class="cartSub">Зелёная звезда = позиция выбрана в заказ. Можно собирать из разных поставщиков.</div>
+        </div>
+        <div class="cartActions" id="tenders-cart-actions"></div>
+      </div>
+
+      <div id="tenders-cart"></div>
+      <div style="margin-top:10px;" id="tenders-totals"></div>
+      <div style="margin-top:10px;" id="tenders-orders"></div>
+    </div>
   </div>
 
-  <!-- OFFER MODAL -->
-  <div class="tender-modal hidden" id="tender-modal" aria-hidden="true">
-    <div class="tender-modal-body" role="dialog" aria-modal="true">
+  <!-- Модалка выбора поставщиков -->
+  <div class="tender-modal hidden" id="tenders-suppliers-modal">
+    <div class="tender-modal-body">
       <div class="tender-modal-header">
-        <div>
-          <div class="h3">Выбор позиции поставщика</div>
-          <div class="sub" id="tender-modal-subtitle">Позиция: …</div>
-          <div class="sub" id="tender-modal-supplier">Поставщик: …</div>
-        </div>
-        <button class="btn" id="tender-modal-close">Закрыть</button>
+        <div class="h3">Выбор поставщиков для сравнения</div>
+        <button class="btn" id="tenders-suppliers-close">Закрыть</button>
       </div>
 
-      <div class="tender-modal-controls">
-        <div class="tender-control">
+      <div class="tender-modal-controls" style="grid-template-columns: 1fr;">
+        <label class="tender-control">
           <div class="tender-control-title">Поиск</div>
-          <input class="input" id="tender-search-manual" placeholder="Например: помидоры сливовидные">
-          <div class="sub">Фильтрует по названию товара (в рамках выбранного поставщика).</div>
-        </div>
-
-        <div class="tender-control-actions">
-          <button class="btn primary" id="tender-search-btn">Найти</button>
-          <button class="btn" id="tender-search-reset">Сброс</button>
-        </div>
+          <input class="input" id="tenders-suppliers-search" placeholder="Начни вводить название..." />
+        </label>
       </div>
 
-      <div class="tender-legend">
-        <div class="tender-legend-title">Кандидаты (score ≥ 0.3)</div>
-
-        <div class="tableWrap">
-          <table class="tender-offers-table" id="tender-offers-table">
-            <thead>
-              <tr>
-                <th>Поставщик</th>
-                <th>Товар</th>
-                <th style="width:120px;">Цена/ед</th>
-                <th style="width:90px;">Score</th>
-                <th style="width:220px;">Действия</th>
-              </tr>
-            </thead>
-            <tbody id="tender-offers-body">
-              <tr><td colspan="5" class="sub">Введите запрос и нажмите «Найти».</td></tr>
-            </tbody>
-          </table>
-        </div>
-
-        <div class="sub" style="margin-top:10px;">
-          «Выбрать» — поставить позицию в ячейку сравнения. «★ В корзину» — выбрать поставщика для этой строки закупки.
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- SUPPLIERS MODAL -->
-  <div class="tender-modal hidden" id="tender-suppliers-modal" aria-hidden="true">
-    <div class="tender-modal-body" role="dialog" aria-modal="true">
-      <div class="tender-modal-header">
-        <div>
-          <div class="h3">Выбор поставщиков для сравнения</div>
-          <div class="sub">Отметьте поставщиков — они появятся столбцами в таблице.</div>
-        </div>
-        <button class="btn" id="tender-suppliers-close">Закрыть</button>
-      </div>
-
-      <div class="tender-control" style="margin-top:12px;">
-        <div class="tender-control-title">Поиск поставщика</div>
-        <input class="input" id="tender-suppliers-search" placeholder="Начните вводить название…">
-      </div>
-
-      <div id="tender-suppliers-list" class="suppliersList">Загрузка…</div>
+      <div class="suppliersList" id="tenders-suppliers-list"></div>
 
       <div class="suppliersActions">
-        <button class="btn primary" id="tender-suppliers-apply">Применить</button>
+        <button class="btn" id="tenders-suppliers-clear">Снять всё</button>
+        <button class="btn primary" id="tenders-suppliers-apply">Применить</button>
       </div>
     </div>
   </div>
-</div>
 
-<!-- ORDERS MODAL -->
-<div class="tender-modal hidden" id="tender-orders-modal" aria-hidden="true">
-  <div class="tender-modal-body" role="dialog" aria-modal="true">
-    <div class="tender-modal-header">
-      <div>
-        <div class="h3">Собранные заказы</div>
-        <div class="sub" id="tender-orders-subtitle">Один заказ на каждого поставщика из корзины.</div>
+  <!-- Модалка подбора позиции у конкретного поставщика -->
+  <div class="tender-modal hidden" id="tenders-match-modal">
+    <div class="tender-modal-body">
+      <div class="tender-modal-header">
+        <div>
+          <div class="h3" id="tenders-match-title">Подбор позиции</div>
+          <div class="tender-hint" id="tenders-match-sub"></div>
+        </div>
+        <button class="btn" id="tenders-match-close">Закрыть</button>
       </div>
-      <button class="btn" id="tender-orders-close">Закрыть</button>
-    </div>
 
-    <div id="tender-orders-body" class="sub">Загрузка…</div>
+      <div class="tender-hint" style="margin-top:6px;">
+        Сортировка: по <b>score</b> (похожесть) ↓, затем по цене ↑. Всё ниже 0.30 обычно мусор.
+      </div>
+
+      <div style="margin-top:10px;">
+        <table class="tender-offers-table" style="width:100%;">
+          <thead>
+            <tr>
+              <th style="width:80px;">Score</th>
+              <th>Товар у поставщика</th>
+              <th style="width:120px;">Цена/ед.</th>
+              <th style="width:120px;">Сумма</th>
+              <th style="width:120px;">Действие</th>
+            </tr>
+          </thead>
+          <tbody id="tenders-match-body"></tbody>
+        </table>
+      </div>
+    </div>
   </div>
 </div>
 
 <style>
+  #tenders-demo .hidden { display:none !important; }
   #tenders-demo .tender-flex { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
-  #tenders-demo .tender-form { margin-left:auto; }
-  #tenders-demo .tender-table-wrap { width:100%; }
-
-  #tenders-demo .tender-hint {
-    margin: 14px 0;
-    padding: 10px 12px;
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    background: #fbfcff;
-    color: #2b3a55;
-    font-size: 13px;
-  }
-  #tenders-demo .tag {
-    display:inline-flex; align-items:center;
-    padding: 3px 8px;
-    border-radius: 999px;
-    background: #eef2ff;
-    color: #312e81;
-    font-weight: 700;
-    font-size: 12px;
-    margin-right: 8px;
-  }
-
-  #tenders-demo .tender-topbar {
-    display:flex; align-items:center; gap:12px; flex-wrap:wrap;
-    padding: 8px 0 0 0;
-  }
+  #tenders-demo .tender-form { margin-left:auto; display:flex; gap:10px; align-items:center; }
+  #tenders-demo .tender-topbar { display:flex; gap:14px; align-items:flex-start; justify-content:space-between; flex-wrap:wrap; }
   #tenders-demo .tender-title { flex: 1 1 auto; min-width: 240px; }
   #tenders-demo .h2 { font-size: 20px; font-weight: 800; }
   #tenders-demo .h3 { font-size: 16px; font-weight: 800; }
   #tenders-demo .tender-actions { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
-
-  #tenders-demo .hidden { display:none !important; }
-
-  #tenders-demo .tender-grid {
-    width:100%;
-    border: 1px solid var(--border);
-    border-radius: 14px;
-    overflow: hidden;
-  }
+  #tenders-demo .tender-hint { color:#64748b; font-size: 13px; }
+  #tenders-demo .tender-grid { width:100%; overflow-x:auto; overflow-y:hidden; }
   #tenders-demo .tender-grid table { width:100%; border-collapse: collapse; }
-  #tenders-demo .tender-grid th, #tenders-demo .tender-grid td {
-    padding: 12px 12px;
-    border-bottom: 1px solid var(--border);
-    vertical-align: top;
-    text-align: left;
-    font-size: 13px;
-  }
-  #tenders-demo .tender-grid thead th {
-    background: #f8fafc;
-    font-size: 12px;
-    text-transform: uppercase;
-    color: #475569;
-    letter-spacing: .02em;
-  }
-  #tenders-demo .tender-actions-col {
-    display:flex; flex-direction:column; gap:8px; align-items:flex-end;
-  }
+  #tenders-demo .tender-grid th, #tenders-demo .tender-grid td { border-bottom: 1px solid #e2e8f0; padding: 10px; vertical-align: top; }
+  #tenders-demo .tender-grid thead th { position: sticky; top: 0; background: #f8fafc; z-index: 1; font-size:12px; text-transform: uppercase; color:#475569; }
+  #tenders-demo .tender-actions-col { display:flex; gap:10px; align-items:center; justify-content:flex-end; }
+  #tenders-demo .primary { background:#111827; color:white; border-color:#111827; }
+  #tenders-demo .danger { background:#fee2e2; color:#991b1b; border-color:#fecaca; }
 
-  #tenders-demo .tender-modal {
-    position: fixed; inset: 0;
-    background: rgba(0,0,0,0.35);
-    display:flex; align-items:center; justify-content:center;
-    z-index: 200;
-    padding: 20px;
-  }
-  #tenders-demo .tender-modal-body {
-    background: #fff;
-    width: min(1100px, 96vw);
-    max-height: 86vh;
-    overflow: auto;
-    border-radius: 16px;
-    padding: 16px;
-    box-shadow: var(--shadow);
-    border: 1px solid var(--border);
-  }
-  #tenders-demo .tender-modal-header {
-    display:flex; align-items:center; justify-content:space-between;
-    gap: 12px;
-    padding-bottom: 10px;
-    border-bottom: 1px solid var(--border);
-    margin-bottom: 12px;
-  }
-  #tenders-demo .tender-modal-controls {
-    display:grid;
-    grid-template-columns: 1fr auto;
-    gap: 12px;
-    align-items:end;
-    margin-bottom: 14px;
-  }
-  #tenders-demo .tender-control {
-    border: 1px solid #e6ebff;
-    border-radius: 14px;
-    padding: 12px;
-    background: #fbfcff;
-  }
-  #tenders-demo .tender-control-title {
-    font-weight: 800;
-    font-size: 12px;
-    text-transform: uppercase;
-    color: #334155;
-    margin-bottom: 8px;
-    letter-spacing: .02em;
-  }
-  #tenders-demo .tender-control-actions { display:flex; gap:10px; align-items:center; justify-content:flex-end; }
+  #tenders-demo .supplierTh { width: 260px; min-width:260px; }
+  #tenders-demo .supplierCell { width: 260px; min-width:260px; }
+  #tenders-demo .supplierCell .supName { font-weight: 700; line-height: 1.25; }
+  #tenders-demo .supplierCell .supMeta { margin-top: 4px; display:flex; gap:10px; flex-wrap:wrap; align-items:baseline; }
+  #tenders-demo .supplierCell .supPrice { font-weight: 900; }
+  #tenders-demo .supplierCell .supScore { color:#64748b; font-size: 12px; }
+  #tenders-demo .supplierCell .supEmpty { height: 18px; }
+  #tenders-demo .iconRow { display:flex; gap:8px; margin-top: 8px; }
+  #tenders-demo .iconBtn { width:28px; height:28px; display:inline-flex; align-items:center; justify-content:center; border:1px solid #e2e8f0; background:white; border-radius:8px; cursor:pointer; }
+  #tenders-demo .iconBtn:hover { background:#f8fafc; }
+  #tenders-demo .iconBtn:disabled { opacity:.45; cursor:not-allowed; }
 
-  #tenders-demo .tender-legend { margin-top: 10px; }
-  #tenders-demo .tender-legend-title { font-weight: 800; margin-bottom: 8px; }
+  #tenders-demo .supplierCell.picked { background: #ecfdf5; outline: 2px solid #34d399; outline-offset: -2px; border-radius: 10px; }
+  #tenders-demo .supplierCell.best:not(.picked) { background: #fffbeb; outline: 2px solid #fbbf24; outline-offset: -2px; border-radius: 10px; }
 
-  #tenders-demo .tender-offers-table { width:100%; border-collapse: collapse; }
-  #tenders-demo .tender-offers-table th, #tenders-demo .tender-offers-table td {
-    padding: 10px 12px;
-    border-bottom: 1px solid var(--border);
-    text-align:left;
-    font-size: 13px;
-    vertical-align: top;
-  }
-  #tenders-demo .tender-offers-table th { background:#f8fafc; color:#475569; font-size:12px; text-transform: uppercase; }
+  #tenders-demo .cartTop { display:flex; gap:12px; align-items:flex-start; justify-content:space-between; flex-wrap:wrap; }
+  #tenders-demo .cartTitle { font-weight: 900; }
+  #tenders-demo .cartSub { color:#64748b; font-size: 13px; }
 
-  @media (max-width: 900px) {
-    #tenders-demo .tender-modal-controls { grid-template-columns: 1fr; }
-    #tenders-demo .tender-actions-col { align-items:stretch; }
+  #tenders-demo .cartTable { width:100%; border-collapse: collapse; margin-top: 10px; }
+  #tenders-demo .cartTable th, #tenders-demo .cartTable td { border-bottom: 1px solid #e2e8f0; padding: 10px; vertical-align: top; }
+  #tenders-demo .cartTable th { background:#f8fafc; font-size: 12px; text-transform: uppercase; color:#475569; }
+
+  #tenders-demo .totalsGrid { display:grid; grid-template-columns: 1fr; gap:10px; }
+  #tenders-demo .totalsGrid table { width:100%; border-collapse: collapse; }
+  #tenders-demo .totalsGrid th, #tenders-demo .totalsGrid td { border-bottom: 1px solid #e2e8f0; padding: 10px; vertical-align: top; }
+  #tenders-demo .totalsGrid th { background:#f8fafc; font-size: 12px; text-transform: uppercase; color:#475569; }
+
+  #tenders-demo .suppliersList { display:grid; grid-template-columns: 1fr 1fr; gap:10px; margin-top:12px; }
+  #tenders-demo .suppliersItem { border:1px solid #e2e8f0; border-radius: 12px; padding: 10px; display:flex; gap:10px; align-items:flex-start; }
+  #tenders-demo .suppliersItem input { transform: translateY(2px); }
+  #tenders-demo .suppliersActions { display:flex; gap:10px; justify-content:flex-end; margin-top: 12px; }
+
+  @media (max-width: 880px){
+    #tenders-demo .suppliersList { grid-template-columns: 1fr; }
   }
 </style>
 
