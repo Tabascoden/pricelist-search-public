@@ -284,7 +284,6 @@
         const { totalPrice } = calcTotals(m, qty);
         const score = Number(m.score);
         const scoreTxt = Number.isFinite(score) ? fmtNum(score, 3) : "";
-        const disabled = (Number.isFinite(score) && score < MIN_SCORE) ? "disabled" : "";
         return `
           <tr>
             <td><b>${esc(scoreTxt)}</b></td>
@@ -292,7 +291,7 @@
             <td>${esc(fmtMoney(m.price_per_unit ?? m.price))}</td>
             <td>${esc(fmtMoney(totalPrice))}</td>
             <td>
-              <button class="btn primary" data-pick="1" data-supplier-item-id="${esc(m.supplier_item_id)}" ${disabled}>★ Выбрать</button>
+              <button class="btn primary" data-pick="1" data-supplier-item-id="${esc(m.supplier_item_id)}">Выбрать</button>
             </td>
           </tr>
         `;
@@ -541,7 +540,7 @@
           `;
         }
 
-        if (!m || !Number.isFinite(score) || score < MIN_SCORE) {
+        if (!m || (!Number.isFinite(score) && !picked) || (score < MIN_SCORE && !picked)) {
           return `
             <td class="supplierCell">
               <div class="supEmpty"></div>
