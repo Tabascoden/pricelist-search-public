@@ -406,13 +406,13 @@ def create_app() -> Flask:
                     cat_val = normalize_category_value(row_list[idx_cat])
                 category_id = category_map.get(cat_val) if cat_val else None
                 row_no += 1
-                items_to_insert.append((project_id, row_no, name_val, qty_val, unit_val, category_id))
+                items_to_insert.append((project_id, row_no, name_val, name_val, qty_val, unit_val, category_id))
 
             if items_to_insert:
                 psycopg2.extras.execute_values(
                     cur,
                     """
-                    INSERT INTO tender_items(project_id, row_no, name_input, qty, unit_input, category_id)
+                    INSERT INTO tender_items(project_id, row_no, name_input, name_original, qty, unit_input, category_id)
                     VALUES %s
                     """,
                     items_to_insert,
@@ -464,7 +464,8 @@ def create_app() -> Flask:
 
             cur.execute(
                 """
-                SELECT ti.id, ti.project_id, ti.row_no, ti.name_input, ti.qty, ti.unit_input, ti.category_id, ti.selected_offer_id
+                SELECT ti.id, ti.project_id, ti.row_no, ti.name_input, ti.name_original, ti.name_source_supplier_item_id,
+                       ti.qty, ti.unit_input, ti.category_id, ti.selected_offer_id
                 FROM tender_items ti
                 WHERE ti.project_id=%s
                 ORDER BY ti.row_no ASC, ti.id ASC;
@@ -779,11 +780,11 @@ def create_app() -> Flask:
                     row_no = _scalar(cur.fetchone())
                     cur.execute(
                         """
-                        INSERT INTO tender_items(project_id, row_no, name_input, qty, unit_input)
-                        VALUES (%s, %s, %s, %s, %s)
+                        INSERT INTO tender_items(project_id, row_no, name_input, name_original, qty, unit_input)
+                        VALUES (%s, %s, %s, %s, %s, %s)
                         RETURNING id;
                         """,
-                        (project_id, row_no, name_input, qty_val, unit_input),
+                        (project_id, row_no, name_input, name_input, qty_val, unit_input),
                     )
                     item_id = _scalar(cur.fetchone())
                 conn.commit()
@@ -795,8 +796,10 @@ def create_app() -> Flask:
                         "project_id": project_id,
                         "row_no": row_no,
                         "name_input": name_input,
+                        "name_original": name_input,
                         "qty": qty_val,
                         "unit_input": unit_input,
+                        "name_source_supplier_item_id": None,
                     }
                 }
             )
@@ -833,6 +836,18 @@ def create_app() -> Flask:
             updates.append("unit_input=%s")
             values.append(unit_input)
 
+        if "name_source_supplier_item_id" in data:
+            raw_source_id = data.get("name_source_supplier_item_id")
+            if raw_source_id in (None, ""):
+                source_id = None
+            else:
+                try:
+                    source_id = int(raw_source_id)
+                except Exception:
+                    return jsonify({"error": "name_source_supplier_item_id must be numeric"}), 400
+            updates.append("name_source_supplier_item_id=%s")
+            values.append(source_id)
+
         if not updates:
             return jsonify({"error": "no fields to update"}), 400
 
@@ -845,7 +860,7 @@ def create_app() -> Flask:
                         UPDATE tender_items
                         SET {", ".join(updates)}
                         WHERE id=%s
-                        RETURNING id, project_id, row_no, name_input, qty, unit_input;
+                        RETURNING id, project_id, row_no, name_input, name_original, name_source_supplier_item_id, qty, unit_input;
                         """,
                         (*values, item_id),
                     )
