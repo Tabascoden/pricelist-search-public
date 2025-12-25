@@ -16,6 +16,7 @@
     blocked: {},                // { ["itemId:supplierId"]: true }
     matchModal: { open: false, itemId: null, supplierId: null, rows: [], loading: false, query: "" },
     suppliersDropdownOpen: false,
+    orderQtyOverrides: {},
     loading: false,
     error: null,
   };
@@ -784,6 +785,7 @@
       if (!offer) continue;
 
       const { totalPrice } = calcTotals(offer, it.qty);
+      const unitPrice = offer?.price_per_unit ?? offer?.price;
       cart.push({
         item_id: it.id,
         row_no: it.row_no,
@@ -794,7 +796,7 @@
         supplier_name: offer.supplier_name,
         supplier_item_id: offer.supplier_item_id,
         name_raw: offer.name_raw,
-        price_per_unit: offer.price_per_unit ?? offer.price,
+        price_per_unit: unitPrice,
         total_price: offer.total_price ?? totalPrice,
       });
     }
@@ -817,19 +819,26 @@
       <table class="cartTable">
         <thead>
           <tr>
-            <th style="width:70px;">№</th>
-            <th>Позиция</th>
-            <th style="width:120px;">Количество</th>
-            <th style="width:90px;">Ед.</th>
-            <th style="width:200px;">Поставщик</th>
-            <th>Товар у поставщика</th>
-            <th style="width:120px;">Цена/ед.</th>
-            <th style="width:120px;">Сумма</th>
+            <th style="width:60px;">№</th>
+            <th style="width:180px;">Позиция</th>
+            <th style="width:90px;">Количество</th>
+            <th style="width:70px;">Ед.</th>
+            <th style="width:160px;">Поставщик</th>
+            <th style="width:300px;">Товар у поставщика</th>
+            <th style="width:140px;">Количество для заказа</th>
+            <th style="width:140px;">Цена поставщика</th>
+            <th style="width:140px;">Сумма</th>
             <th style="width:90px;"></th>
           </tr>
         </thead>
         <tbody>
           ${cart.map(r => `
+            ${(() => {
+              const override = state.orderQtyOverrides?.[String(r.item_id)];
+              const orderQty = Number.isFinite(override) ? override : Number(r.qty);
+              const unitPrice = Number(r.price_per_unit);
+              const orderTotal = Number.isFinite(orderQty) && Number.isFinite(unitPrice) ? unitPrice * orderQty : r.total_price;
+              return `
             <tr>
               <td>${esc(r.row_no ?? "")}</td>
               <td><b>${esc(r.name_input || "")}</b></td>
@@ -837,10 +846,15 @@
               <td>${esc(r.unit_input || "")}</td>
               <td>${esc(r.supplier_name || ("#" + r.supplier_id))}</td>
               <td>${esc(r.name_raw || "")}</td>
-              <td>${esc(fmtMoney(r.price_per_unit))}</td>
-              <td><b>${esc(fmtMoney(r.total_price))}</b></td>
+              <td>
+                <input class="orderQtyInput" type="number" step="0.001" min="0" value="${esc(Number.isFinite(orderQty) ? fmtNum(orderQty, 3) : "")}" data-order-qty="${esc(r.item_id)}">
+              </td>
+              <td>${esc(fmtMoney(unitPrice))}</td>
+              <td><b data-order-sum="${esc(r.item_id)}">${esc(fmtMoney(orderTotal))}</b></td>
               <td><button class="btn danger" data-cart-del="${esc(r.item_id)}">Убрать</button></td>
             </tr>
+              `;
+            })()}
           `).join("")}
         </tbody>
       </table>
@@ -853,14 +867,52 @@
       };
     });
 
+    $$("[data-order-qty]", box).forEach(input => {
+      input.addEventListener("input", () => {
+        const itemId = Number(input.getAttribute("data-order-qty"));
+        const val = input.value;
+        let orderQty = null;
+        try {
+          orderQty = parseQtyValue(val);
+        } catch {
+          orderQty = null;
+        }
+        if (Number.isFinite(orderQty)) {
+          state.orderQtyOverrides[String(itemId)] = orderQty;
+        } else {
+          delete state.orderQtyOverrides[String(itemId)];
+        }
+        const row = cart.find(r => Number(r.item_id) === itemId);
+        if (!row) return;
+        const unitPrice = Number(row.price_per_unit);
+        const total = Number.isFinite(orderQty) && Number.isFinite(unitPrice)
+          ? orderQty * unitPrice
+          : row.total_price;
+        const sumCell = box.querySelector(`[data-order-sum="${CSS.escape(String(itemId))}"]`);
+        if (sumCell) sumCell.textContent = fmtMoney(total);
+        renderCartTotals(cart);
+      });
+    });
+
     // totals by supplier
+    renderCartTotals(cart);
+  }
+
+  function renderCartTotals(cart) {
+    const totalsBox = $("#tenders-totals");
     const bySup = new Map();
     for (const r of cart) {
       const sid = Number(r.supplier_id);
       const sname = r.supplier_name || getSupplierName(sid);
+      const override = state.orderQtyOverrides?.[String(r.item_id)];
+      const orderQty = Number.isFinite(override) ? override : Number(r.qty);
+      const unitPrice = Number(r.price_per_unit);
+      const rowTotal = Number.isFinite(orderQty) && Number.isFinite(unitPrice)
+        ? orderQty * unitPrice
+        : Number(r.total_price) || 0;
       const prev = bySup.get(sid) || { supplier_id: sid, supplier_name: sname, items: 0, total: 0 };
       prev.items += 1;
-      prev.total += Number(r.total_price) || 0;
+      prev.total += Number(rowTotal) || 0;
       bySup.set(sid, prev);
     }
     const totals = Array.from(bySup.values()).sort((a, b) => b.total - a.total);
