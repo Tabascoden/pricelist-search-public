@@ -296,15 +296,12 @@
 
     const rows = (state.matchModal.rows || [])
       .map(m => {
-        const { totalPrice } = calcTotals(m, qty);
-        const score = Number(m.score);
-        const scoreTxt = Number.isFinite(score) ? fmtNum(score, 3) : "";
+        const supplierPrice = m.price ?? m.price_per_unit;
         return `
           <tr>
-            <td><b>${esc(scoreTxt)}</b></td>
             <td>${esc(m.name_raw || "")}</td>
+            <td>${esc(fmtMoney(supplierPrice))}</td>
             <td>${esc(fmtMoney(m.price_per_unit ?? m.price))}</td>
-            <td>${esc(fmtMoney(totalPrice))}</td>
             <td>
               <button class="btn primary" data-pick="1" data-supplier-item-id="${esc(m.supplier_item_id)}">Выбрать</button>
             </td>
@@ -312,7 +309,7 @@
         `;
       }).join("");
 
-    body.innerHTML = rows || `<tr><td colspan="5" class="tender-hint">Ничего не найдено.</td></tr>`;
+    body.innerHTML = rows || `<tr><td colspan="4" class="tender-hint">Ничего не найдено.</td></tr>`;
 
     // bind picks
     $$("button[data-pick]", body).forEach(btn => {
@@ -636,6 +633,7 @@
         }
 
         const { totalPrice } = calcTotals(m, it.qty);
+        const supplierPrice = m.price ?? m.price_per_unit;
         const cls = [
           "supplierCell",
           picked ? "picked" : "",
@@ -651,8 +649,8 @@
           <td class="${cls}">
             <div class="supName">${esc(m.name_raw || "")}</div>
             <div class="supMeta">
-              <div class="supPrice">${esc(fmtMoney(totalPrice))}</div>
-              <div class="supScore">score: ${esc(fmtNum(score, 3))} • цена/ед: ${esc(fmtMoney(m.price_per_unit ?? m.price))}</div>
+              <div class="supPrice">${esc(fmtMoney(supplierPrice))}</div>
+              <div class="supScore">цена/ед: ${esc(fmtMoney(m.price_per_unit ?? m.price))}</div>
             </div>
             <div class="iconRow">
               <button class="iconBtn" title="Скрыть" data-block="${esc(key)}">✕</button>
