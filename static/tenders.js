@@ -297,7 +297,7 @@
 
     const rows = (state.matchModal.rows || [])
       .map(m => {
-        const supplierPrice = m.price ?? m.price_per_unit;
+        const supplierPrice = m.price;
         return `
           <tr>
             <td>${esc(m.name_raw || "")}</td>
@@ -634,7 +634,7 @@
         }
 
         const { totalPrice } = calcTotals(m, it.qty);
-        const supplierPrice = m.price ?? m.price_per_unit;
+        const supplierPrice = m.price;
         const cls = [
           "supplierCell",
           picked ? "picked" : "",
@@ -785,7 +785,7 @@
       if (!offer) continue;
 
       const { totalPrice } = calcTotals(offer, it.qty);
-      const unitPrice = offer?.price_per_unit ?? offer?.price;
+      const supplierPrice = offer?.price;
       cart.push({
         item_id: it.id,
         row_no: it.row_no,
@@ -796,7 +796,7 @@
         supplier_name: offer.supplier_name,
         supplier_item_id: offer.supplier_item_id,
         name_raw: offer.name_raw,
-        price_per_unit: unitPrice,
+        supplier_price: supplierPrice,
         total_price: offer.total_price ?? totalPrice,
       });
     }
@@ -836,8 +836,8 @@
             ${(() => {
               const override = state.orderQtyOverrides?.[String(r.item_id)];
               const orderQty = Number.isFinite(override) ? override : Number(r.qty);
-              const unitPrice = Number(r.price_per_unit);
-              const orderTotal = Number.isFinite(orderQty) && Number.isFinite(unitPrice) ? unitPrice * orderQty : r.total_price;
+              const supplierPrice = Number(r.supplier_price);
+              const orderTotal = Number.isFinite(orderQty) && Number.isFinite(supplierPrice) ? supplierPrice * orderQty : r.total_price;
               return `
             <tr>
               <td>${esc(r.row_no ?? "")}</td>
@@ -849,7 +849,7 @@
               <td>
                 <input class="orderQtyInput" type="number" step="0.001" min="0" value="${esc(Number.isFinite(orderQty) ? fmtNum(orderQty, 3) : "")}" data-order-qty="${esc(r.item_id)}">
               </td>
-              <td>${esc(fmtMoney(unitPrice))}</td>
+              <td>${esc(fmtMoney(supplierPrice))}</td>
               <td><b data-order-sum="${esc(r.item_id)}">${esc(fmtMoney(orderTotal))}</b></td>
               <td><button class="btn danger" data-cart-del="${esc(r.item_id)}">Убрать</button></td>
             </tr>
@@ -884,9 +884,9 @@
         }
         const row = cart.find(r => Number(r.item_id) === itemId);
         if (!row) return;
-        const unitPrice = Number(row.price_per_unit);
-        const total = Number.isFinite(orderQty) && Number.isFinite(unitPrice)
-          ? orderQty * unitPrice
+        const supplierPrice = Number(row.supplier_price);
+        const total = Number.isFinite(orderQty) && Number.isFinite(supplierPrice)
+          ? orderQty * supplierPrice
           : row.total_price;
         const sumCell = box.querySelector(`[data-order-sum="${CSS.escape(String(itemId))}"]`);
         if (sumCell) sumCell.textContent = fmtMoney(total);
@@ -906,9 +906,9 @@
       const sname = r.supplier_name || getSupplierName(sid);
       const override = state.orderQtyOverrides?.[String(r.item_id)];
       const orderQty = Number.isFinite(override) ? override : Number(r.qty);
-      const unitPrice = Number(r.price_per_unit);
-      const rowTotal = Number.isFinite(orderQty) && Number.isFinite(unitPrice)
-        ? orderQty * unitPrice
+      const supplierPrice = Number(r.supplier_price);
+      const rowTotal = Number.isFinite(orderQty) && Number.isFinite(supplierPrice)
+        ? orderQty * supplierPrice
         : Number(r.total_price) || 0;
       const prev = bySup.get(sid) || { supplier_id: sid, supplier_name: sname, items: 0, total: 0 };
       prev.items += 1;
