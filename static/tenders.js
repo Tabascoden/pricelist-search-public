@@ -1025,7 +1025,11 @@
       const pid = state.project?.id;
       if (!pid) return;
       // экспорт как есть (backend уже умеет)
-      const r = await fetch(`/api/tenders/${pid}/export`, { method: "POST" });
+      const r = await fetch(`/api/tenders/${pid}/export`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ order_qty_overrides: state.orderQtyOverrides || {} }),
+      });
       const blob = await r.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");

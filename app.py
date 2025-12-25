@@ -26,7 +26,7 @@ import pandas as pd
 
 try:
     from openpyxl import Workbook
-    from openpyxl.styles import Alignment, Font
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 except Exception:
     Workbook = None  # fallback на CSV
 
@@ -1340,71 +1340,125 @@ def create_app() -> Flask:
     @app.route("/api/tenders/<int:project_id>/export", methods=["POST"])
     def api_tenders_export(project_id: int):
         try:
+            payload = request.get_json(silent=True) or {}
+            overrides_raw = payload.get("order_qty_overrides") or {}
+            order_qty_overrides: Dict[int, float] = {}
+            for key, value in overrides_raw.items():
+                try:
+                    item_id = int(key)
+                except Exception:
+                    continue
+                try:
+                    if isinstance(value, str):
+                        parsed = float(value.replace(",", "."))
+                    else:
+                        parsed = float(value)
+                except Exception:
+                    continue
+                if math.isfinite(parsed):
+                    order_qty_overrides[item_id] = parsed
+
             with db_connect() as conn:
                 ensure_schema_compare(conn)
                 proj = _load_project(conn, project_id)
                 if not proj:
                     return jsonify({"error": "not found"}), 404
-                rows: List[List[Any]] = []
+                cart_rows: List[Dict[str, Any]] = []
                 for it in proj.get("items", []):
-                    final_offer = None
+                    selected_id = it.get("selected_offer_id")
+                    if not selected_id:
+                        continue
+                    offer = None
                     for off in it.get("offers", []):
-                        if off.get("offer_type") == "final":
-                            final_offer = off
+                        if off.get("id") == selected_id:
+                            offer = off
                             break
-                    if not final_offer and it.get("selected_offer_id"):
-                        for off in it.get("offers", []):
-                            if off.get("id") == it.get("selected_offer_id"):
-                                final_offer = off
-                                break
-                    rows.append([it.get("row_no"), it.get("name_input"), it.get("qty"), it.get("unit_input"), it.get("category_id"), final_offer])
+                    if not offer:
+                        continue
+                    item_id = it.get("id")
+                    tender_qty = it.get("qty")
+                    order_qty = order_qty_overrides.get(item_id, tender_qty)
+                    supplier_price = offer.get("price")
+                    total_val = None
+                    try:
+                        if order_qty is not None and supplier_price is not None:
+                            total_val = float(order_qty) * float(supplier_price)
+                    except Exception:
+                        total_val = None
+                    if total_val is None:
+                        total_val = offer.get("total_price")
+                    if total_val is None:
+                        try:
+                            total_val, _ = _calc_offer_totals(offer, order_qty)
+                        except Exception:
+                            total_val = None
+                    cart_rows.append(
+                        {
+                            "row_no": it.get("row_no"),
+                            "name_input": it.get("name_input"),
+                            "qty": tender_qty,
+                            "unit_input": it.get("unit_input"),
+                            "supplier_id": offer.get("supplier_id"),
+                            "supplier_name": offer.get("supplier_name"),
+                            "name_raw": offer.get("name_raw"),
+                            "order_qty": order_qty,
+                            "supplier_price": supplier_price,
+                            "total_price": total_val,
+                        }
+                    )
 
                 headers = [
-                    "№ строки",
-                    "Номенклатура",
-                    "Кол-во",
-                    "Ед.",
-                    "Категория",
-                    "Поставщик",
-                    "Товар",
-                    "Ед. прайса",
-                    "Цена",
-                    "Базовая ед.",
-                    "Баз. кол-во",
-                    "Цена за баз. ед.",
-                    "Сумма",
+                    "№",
+                    "ПОЗИЦИЯ",
+                    "КОЛИЧЕСТВО",
+                    "ЕД.",
+                    "ПОСТАВЩИК",
+                    "ТОВАР У ПОСТАВЩИКА",
+                    "КОЛИЧЕСТВО ДЛЯ ЗАКАЗА",
+                    "ЦЕНА ПОСТАВЩИКА",
+                    "СУММА",
                 ]
 
                 if Workbook is None:
                     out = BytesIO()
                     writer = csv.writer(out)
                     writer.writerow(headers)
-                    for r in rows:
-                        offer = r[5] or {}
-                        sum_val = None
-                        try:
-                            total_price, _ = _calc_offer_totals(offer, r[2])
-                            if total_price is not None:
-                                sum_val = total_price
-                        except Exception:
-                            sum_val = None
+                    for r in cart_rows:
                         writer.writerow(
                             [
-                                r[0],
-                                r[1],
-                                r[2],
-                                r[3],
-                                r[4],
-                                offer.get("supplier_name"),
-                                offer.get("name_raw"),
-                                offer.get("unit"),
-                                offer.get("price"),
-                                offer.get("base_unit"),
-                                offer.get("base_qty"),
-                                offer.get("price_per_unit"),
-                                sum_val,
+                                r.get("row_no"),
+                                r.get("name_input"),
+                                r.get("qty"),
+                                r.get("unit_input"),
+                                r.get("supplier_name"),
+                                r.get("name_raw"),
+                                r.get("order_qty"),
+                                r.get("supplier_price"),
+                                r.get("total_price"),
                             ]
                         )
+                    writer.writerow([])
+                    writer.writerow(["ИТОГО ПО ПОСТАВЩИКУ", "ПОЗИЦИЙ", "СУММА"])
+                    totals_map: Dict[Any, Dict[str, Any]] = {}
+                    for r in cart_rows:
+                        sid = r.get("supplier_id")
+                        if sid is None:
+                            continue
+                        row_total = r.get("total_price") or 0
+                        entry = totals_map.setdefault(
+                            sid,
+                            {"supplier_name": r.get("supplier_name"), "items": 0, "total": 0.0},
+                        )
+                        entry["items"] += 1
+                        try:
+                            entry["total"] += float(row_total)
+                        except Exception:
+                            entry["total"] += 0.0
+                    totals_list = sorted(totals_map.values(), key=lambda x: x.get("total", 0), reverse=True)
+                    grand_total = sum([x.get("total") or 0 for x in totals_list])
+                    for t in totals_list:
+                        writer.writerow([t.get("supplier_name"), t.get("items"), t.get("total")])
+                    writer.writerow(["ИТОГО", len(cart_rows), grand_total])
                     out.seek(0)
                     return send_file(out, mimetype="text/csv", as_attachment=True, download_name="tender.csv")
 
@@ -1412,35 +1466,101 @@ def create_app() -> Flask:
                 ws = wb.active
                 ws.title = "Тендер"
                 ws.append(headers)
+
+                header_fill = PatternFill("solid", fgColor="F8FAFC")
+                header_font = Font(bold=True)
+                border_side = Side(style="thin", color="E2E8F0")
+                border = Border(top=border_side, left=border_side, right=border_side, bottom=border_side)
+
                 for c in ws[1]:
-                    c.font = Font(bold=True)
-                    c.alignment = Alignment(vertical="center")
-                for r in rows:
-                    offer = r[5] or {}
-                    sum_val = None
-                    try:
-                        total_price, _ = _calc_offer_totals(offer, r[2])
-                        if total_price is not None:
-                            sum_val = total_price
-                    except Exception:
-                        sum_val = None
+                    c.font = header_font
+                    c.fill = header_fill
+                    c.alignment = Alignment(vertical="center", wrap_text=True)
+                    c.border = border
+
+                for r in cart_rows:
                     ws.append(
                         [
-                            r[0],
-                            r[1],
-                            r[2],
-                            r[3],
-                            r[4],
-                            offer.get("supplier_name"),
-                            offer.get("name_raw"),
-                            offer.get("unit"),
-                            offer.get("price"),
-                            offer.get("base_unit"),
-                            offer.get("base_qty"),
-                            offer.get("price_per_unit"),
-                            sum_val,
+                            r.get("row_no"),
+                            r.get("name_input"),
+                            r.get("qty"),
+                            r.get("unit_input"),
+                            r.get("supplier_name"),
+                            r.get("name_raw"),
+                            r.get("order_qty"),
+                            r.get("supplier_price"),
+                            r.get("total_price"),
                         ]
                     )
+
+                for row in ws.iter_rows(min_row=2, max_row=ws.max_row, max_col=len(headers)):
+                    for cell in row:
+                        cell.border = border
+                        cell.alignment = Alignment(vertical="top", wrap_text=True)
+                    if row[1].value is not None:
+                        row[1].font = Font(bold=True)
+                    if row[8].value is not None:
+                        row[8].font = Font(bold=True)
+
+                number_columns = {3: "0.###", 7: "0.###", 8: "#,##0.00", 9: "#,##0.00"}
+                for col_idx, fmt in number_columns.items():
+                    for cell in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=col_idx, max_col=col_idx):
+                        for c in cell:
+                            if isinstance(c.value, (int, float)):
+                                c.number_format = fmt
+
+                column_widths = [6, 30, 12, 8, 22, 45, 20, 18, 16]
+                for idx, width in enumerate(column_widths, start=1):
+                    ws.column_dimensions[chr(64 + idx)].width = width
+
+                ws.append([])
+                ws.append(["ИТОГО ПО ПОСТАВЩИКУ", "ПОЗИЦИЙ", "СУММА"])
+                totals_header_row = ws.max_row
+                for c in ws[totals_header_row]:
+                    c.font = header_font
+                    c.fill = header_fill
+                    c.alignment = Alignment(vertical="center")
+                    c.border = border
+
+                totals_map: Dict[Any, Dict[str, Any]] = {}
+                for r in cart_rows:
+                    sid = r.get("supplier_id")
+                    if sid is None:
+                        continue
+                    row_total = r.get("total_price") or 0
+                    entry = totals_map.setdefault(
+                        sid,
+                        {"supplier_name": r.get("supplier_name"), "items": 0, "total": 0.0},
+                    )
+                    entry["items"] += 1
+                    try:
+                        entry["total"] += float(row_total)
+                    except Exception:
+                        entry["total"] += 0.0
+
+                totals_list = sorted(totals_map.values(), key=lambda x: x.get("total", 0), reverse=True)
+                grand_total = sum([x.get("total") or 0 for x in totals_list])
+                for t in totals_list:
+                    ws.append([t.get("supplier_name"), t.get("items"), t.get("total")])
+                ws.append(["ИТОГО", len(cart_rows), grand_total])
+
+                totals_start_row = totals_header_row
+                totals_end_row = ws.max_row
+                for row in ws.iter_rows(min_row=totals_start_row, max_row=totals_end_row, min_col=1, max_col=3):
+                    for cell in row:
+                        cell.border = border
+                        if cell.row != totals_header_row:
+                            cell.alignment = Alignment(vertical="top")
+                            if cell.col_idx == 3 and isinstance(cell.value, (int, float)):
+                                cell.number_format = "#,##0.00"
+                    if row[0].value == "ИТОГО":
+                        for cell in row:
+                            cell.font = Font(bold=True)
+                    elif row[0].value is not None and row[0].row != totals_header_row:
+                        row[0].font = Font(bold=True)
+                        if row[2].value is not None:
+                            row[2].font = Font(bold=True)
+
                 bio = BytesIO()
                 wb.save(bio)
                 bio.seek(0)
