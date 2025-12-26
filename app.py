@@ -464,7 +464,7 @@ def create_app() -> Flask:
         text = f"{name_input or ''} {unit_input or ''}".strip()
         if not text:
             return None, None
-        match = re.search(r"\b(\d+(?:[\.,]\d+)?)\s*(кг|г|гр|л|мл)\b", text, re.IGNORECASE)
+        match = re.search(r"(\d+(?:[\.,]\d+)?)\s*(кг|г|гр|л|мл)\b", text, re.IGNORECASE)
         if not match:
             return None, None
         qty_raw = match.group(1).replace(",", ".")
@@ -509,14 +509,15 @@ def create_app() -> Flask:
         score_expr = """
         CASE
           WHEN length(query.q_text_core) <= 4 THEN greatest(
-            word_similarity(si.name_search, query.q_text_core),
-            word_similarity(si.name_search, query.q_text_full)
+            similarity(si.name_search, query.q_text_core),
+            word_similarity(query.q_text_core, si.name_search),
+            word_similarity(query.q_text_full, si.name_search)
           )
           ELSE greatest(
             similarity(si.name_search, query.q_text_core),
-            word_similarity(si.name_search, query.q_text_core),
+            word_similarity(query.q_text_core, si.name_search),
             similarity(si.name_search, query.q_text_full),
-            word_similarity(si.name_search, query.q_text_full)
+            word_similarity(query.q_text_full, si.name_search)
           )
         END
         """
@@ -601,7 +602,8 @@ def create_app() -> Flask:
                     AND ranked.price IS NOT NULL
                     THEN CEIL(query.tender_qty / ranked.base_qty) * ranked.price
                   ELSE NULL
-                END AS total_cost
+                END AS total_cost,
+                CASE WHEN ranked.score >= %(min_score)s THEN 1 ELSE 0 END AS pass_score
               FROM ranked, query
               WHERE
                 (ranked.rank >= %(min_rank)s OR ranked.score >= %(min_score)s)
@@ -609,6 +611,7 @@ def create_app() -> Flask:
             SELECT *
             FROM filtered
             ORDER BY unit_match DESC,
+                     pass_score DESC,
                      match_quality DESC,
                      total_cost ASC NULLS LAST,
                      price_per_unit ASC NULLS LAST,
