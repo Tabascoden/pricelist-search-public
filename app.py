@@ -458,6 +458,164 @@ def create_app() -> Flask:
                     items_to_insert,
                 )
         return len(items_to_insert)
+    def _extract_unit_hint(
+        name_input: Optional[str], unit_input: Optional[str]
+    ) -> Tuple[Optional[str], Optional[Decimal]]:
+        text = f"{name_input or ''} {unit_input or ''}".strip()
+        if not text:
+            return None, None
+        match = re.search(r"\b(\d+(?:[\.,]\d+)?)\s*(кг|г|гр|л|мл)\b", text, re.IGNORECASE)
+        if not match:
+            return None, None
+        qty_raw = match.group(1).replace(",", ".")
+        unit_raw = match.group(2).lower()
+        unit_map = {
+            "кг": ("kg", Decimal("1")),
+            "г": ("kg", Decimal("0.001")),
+            "гр": ("kg", Decimal("0.001")),
+            "л": ("l", Decimal("1")),
+            "мл": ("l", Decimal("0.001")),
+        }
+        unit_info = unit_map.get(unit_raw)
+        if not unit_info:
+            return None, None
+        try:
+            qty_val = Decimal(qty_raw)
+        except Exception:
+            return None, None
+        base_unit, multiplier = unit_info
+        base_qty = (qty_val * multiplier).quantize(Decimal("0.000001"))
+        return base_unit, base_qty
+
+    def _build_tender_query_info(item: Dict[str, Any], q_input: Optional[str] = None) -> Dict[str, Any]:
+        q_user = normalize_base(q_input) if q_input else ""
+        name_input = item.get("name_input") or ""
+        search_name = item.get("search_name") or ""
+        q_text_full = q_user or normalize_base(name_input) or ""
+        q_text_core = q_user or normalize_base(search_name or name_input) or ""
+        q_filter = q_user or None
+        q_like = f"%{q_filter}%" if q_filter else None
+        want_base_unit, want_base_qty = _extract_unit_hint(name_input, item.get("unit_input"))
+        return {
+            "q_text_full": q_text_full,
+            "q_text_core": q_text_core,
+            "q_filter": q_filter,
+            "q_like": q_like,
+            "want_base_unit": want_base_unit,
+            "want_base_qty": want_base_qty,
+        }
+
+    def _tender_candidates_sql(query_source: str) -> str:
+        score_expr = """
+        CASE
+          WHEN length(query.q_text_core) <= 4 THEN greatest(
+            word_similarity(si.name_search, query.q_text_core),
+            word_similarity(si.name_search, query.q_text_full)
+          )
+          ELSE greatest(
+            similarity(si.name_search, query.q_text_core),
+            word_similarity(si.name_search, query.q_text_core),
+            similarity(si.name_search, query.q_text_full),
+            word_similarity(si.name_search, query.q_text_full)
+          )
+        END
+        """
+        return f"""
+            WITH query AS (
+              {query_source}
+            ),
+            fts AS (
+              SELECT
+                si.id AS supplier_item_id,
+                si.supplier_id,
+                si.name_raw,
+                si.unit,
+                si.price,
+                si.base_unit,
+                si.base_qty,
+                si.price_per_unit,
+                ts_rank(si.name_search_tsv, query.tsq) AS rank,
+                {score_expr} AS score,
+                'fts'::text AS mode
+              FROM supplier_items si, query
+              WHERE si.supplier_id = query.supplier_id
+                AND si.is_active IS TRUE
+                AND (query.category_id IS NULL OR si.category_id = query.category_id)
+                AND (query.q_filter IS NULL OR si.name_search ILIKE query.q_like)
+                AND query.tsq IS NOT NULL
+                AND si.name_search_tsv @@ query.tsq
+                AND ts_rank(si.name_search_tsv, query.tsq) >= %(min_rank)s
+              ORDER BY rank DESC, score DESC, si.price_per_unit ASC NULLS LAST, si.id DESC
+              LIMIT %(fts_candidates)s
+            ),
+            trgm AS (
+              SELECT
+                si.id AS supplier_item_id,
+                si.supplier_id,
+                si.name_raw,
+                si.unit,
+                si.price,
+                si.base_unit,
+                si.base_qty,
+                si.price_per_unit,
+                0.0::float AS rank,
+                {score_expr} AS score,
+                'trgm'::text AS mode
+              FROM supplier_items si, query
+              WHERE si.supplier_id = query.supplier_id
+                AND si.is_active IS TRUE
+                AND (query.category_id IS NULL OR si.category_id = query.category_id)
+                AND (query.q_filter IS NULL OR si.name_search ILIKE query.q_like)
+                AND {score_expr} >= %(min_score)s
+              ORDER BY score DESC, si.price_per_unit ASC NULLS LAST, si.id DESC
+              LIMIT %(trgm_candidates)s
+            ),
+            combined AS (
+              SELECT * FROM fts
+              UNION ALL
+              SELECT * FROM trgm
+              WHERE NOT EXISTS (SELECT 1 FROM fts)
+            ),
+            ranked AS (
+              SELECT
+                combined.*,
+                CASE WHEN combined.mode='fts' THEN combined.rank ELSE combined.score END AS match_quality,
+                CASE
+                  WHEN query.want_base_unit IS NOT NULL
+                    AND query.want_base_qty IS NOT NULL
+                    AND combined.base_unit = query.want_base_unit
+                    AND combined.base_qty BETWEEN query.want_base_qty * 0.9 AND query.want_base_qty * 1.1
+                  THEN 1 ELSE 0
+                END AS unit_match
+              FROM combined, query
+            ),
+            filtered AS (
+              SELECT
+                ranked.*,
+                CASE
+                  WHEN query.tender_qty IS NOT NULL AND ranked.price_per_unit IS NOT NULL
+                    THEN ranked.price_per_unit * query.tender_qty
+                  WHEN query.tender_qty IS NOT NULL
+                    AND ranked.base_qty IS NOT NULL
+                    AND ranked.base_qty > 0
+                    AND ranked.price IS NOT NULL
+                    THEN CEIL(query.tender_qty / ranked.base_qty) * ranked.price
+                  ELSE NULL
+                END AS total_cost
+              FROM ranked, query
+              WHERE
+                (ranked.rank >= %(min_rank)s OR ranked.score >= %(min_score)s)
+            )
+            SELECT *
+            FROM filtered
+            ORDER BY unit_match DESC,
+                     match_quality DESC,
+                     total_cost ASC NULLS LAST,
+                     price_per_unit ASC NULLS LAST,
+                     supplier_item_id DESC
+            LIMIT %(limit)s
+        """
+
     def _calc_offer_totals(offer: Dict[str, Any], tender_qty: Optional[Any]):
         total_price = None
         packs_needed = None
@@ -995,9 +1153,9 @@ def create_app() -> Flask:
             except Exception:
                 return jsonify({"error": "invalid supplier_ids"}), 400
         try:
-            min_score = float(min_score_raw) if min_score_raw is not None else 0.0
+            min_score = float(min_score_raw) if min_score_raw is not None else MIN_SCORE_DEFAULT
         except Exception:
-            min_score = 0.0
+            min_score = MIN_SCORE_DEFAULT
         try:
             min_rank = float(min_rank_raw) if min_rank_raw is not None else MIN_RANK_DEFAULT
         except Exception:
@@ -1018,13 +1176,85 @@ def create_app() -> Flask:
                 with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                     cur.execute(
                         """
+                        SELECT id, name_input, search_name, qty, unit_input, category_id
+                        FROM tender_items
+                        WHERE project_id=%s
+                        ORDER BY row_no ASC, id ASC;
+                        """,
+                        (project_id,),
+                    )
+                    items = [dict(r) for r in cur.fetchall()]
+                    if not items:
+                        return jsonify({"matrix": {}})
+                    tender_item_ids = []
+                    q_text_fulls = []
+                    q_text_cores = []
+                    q_filters = []
+                    q_likes = []
+                    category_ids = []
+                    qtys = []
+                    want_base_units = []
+                    want_base_qtys = []
+                    for item in items:
+                        info = _build_tender_query_info(item)
+                        tender_item_ids.append(item["id"])
+                        q_text_fulls.append(info["q_text_full"])
+                        q_text_cores.append(info["q_text_core"])
+                        q_filters.append(info["q_filter"])
+                        q_likes.append(info["q_like"])
+                        category_ids.append(item.get("category_id"))
+                        qtys.append(item.get("qty"))
+                        want_base_units.append(info["want_base_unit"])
+                        want_base_qtys.append(info["want_base_qty"])
+
+                    candidate_sql = _tender_candidates_sql(
+                        """
+                        SELECT
+                          ti.q_text_full AS q_text_full,
+                          ti.q_text_core AS q_text_core,
+                          ti.q_filter AS q_filter,
+                          ti.q_like AS q_like,
+                          ti.category_id AS category_id,
+                          ti.want_base_unit AS want_base_unit,
+                          ti.want_base_qty AS want_base_qty,
+                          ti.qty AS tender_qty,
+                          sup.supplier_id AS supplier_id,
+                          websearch_to_tsquery('russian', ti.q_text_full) AS tsq
+                        """
+                    )
+
+                    sql = f"""
                         WITH suppliers AS (
                           SELECT unnest(%(supplier_ids)s::int[]) AS supplier_id
+                        ),
+                        items AS (
+                          SELECT *
+                          FROM unnest(
+                            %(tender_item_ids)s::int[],
+                            %(q_text_fulls)s::text[],
+                            %(q_text_cores)s::text[],
+                            %(q_filters)s::text[],
+                            %(q_likes)s::text[],
+                            %(category_ids)s::int[],
+                            %(qtys)s::numeric[],
+                            %(want_base_units)s::text[],
+                            %(want_base_qtys)s::numeric[]
+                          ) AS v(
+                            tender_item_id,
+                            q_text_full,
+                            q_text_core,
+                            q_filter,
+                            q_like,
+                            category_id,
+                            qty,
+                            want_base_unit,
+                            want_base_qty
+                          )
                         )
                         SELECT
-                          ti.id AS tender_item_id,
+                          ti.tender_item_id,
                           sup.supplier_id,
-                          si.id AS supplier_item_id,
+                          si.supplier_item_id,
                           si.name_raw,
                           si.unit,
                           si.price,
@@ -1033,72 +1263,38 @@ def create_app() -> Flask:
                           si.price_per_unit,
                           si.rank AS rank,
                           si.score AS score,
-                          si.mode AS mode
-                        FROM tender_items ti
+                          si.mode AS mode,
+                          si.unit_match AS unit_match
+                        FROM items ti
                         CROSS JOIN suppliers sup
                         LEFT JOIN LATERAL (
-                          WITH query AS (
-                            SELECT
-                              coalesce(ti.search_name, ti.name_input) AS q_text,
-                              websearch_to_tsquery('russian', coalesce(ti.search_name, ti.name_input)) AS tsq
-                          ),
-                          fts AS (
-                            SELECT
-                              si.*,
-                              ts_rank(si.name_search_tsv, query.tsq) AS rank,
-                              similarity(si.name_search, query.q_text) AS score,
-                              'fts'::text AS mode
-                            FROM supplier_items si, query
-                            WHERE si.supplier_id = sup.supplier_id
-                              AND si.is_active IS TRUE
-                              AND (ti.category_id IS NULL OR si.category_id = ti.category_id)
-                              AND si.name_search_tsv @@ query.tsq
-                              AND ts_rank(si.name_search_tsv, query.tsq) >= %(min_rank)s
-                            ORDER BY rank DESC, score DESC, si.price_per_unit ASC NULLS LAST, si.id DESC
-                            LIMIT %(fts_candidates)s
-                          ),
-                          fts_best AS (
-                            SELECT * FROM fts ORDER BY rank DESC, score DESC, price_per_unit ASC NULLS LAST, id DESC LIMIT 1
-                          ),
-                          trgm AS (
-                            SELECT
-                              si.*,
-                              0.0::float AS rank,
-                              similarity(si.name_search, query.q_text) AS score,
-                              'trgm'::text AS mode
-                            FROM supplier_items si, query
-                            WHERE si.supplier_id = sup.supplier_id
-                              AND si.is_active IS TRUE
-                              AND (ti.category_id IS NULL OR si.category_id = ti.category_id)
-                              AND similarity(si.name_search, query.q_text) >= %(min_score)s
-                            ORDER BY score DESC, si.price_per_unit ASC NULLS LAST, si.id DESC
-                            LIMIT %(trgm_candidates)s
-                          ),
-                          trgm_best AS (
-                            SELECT * FROM trgm ORDER BY score DESC, price_per_unit ASC NULLS LAST, id DESC LIMIT 1
-                          )
-                          SELECT * FROM fts_best
-                          UNION ALL
-                          SELECT * FROM trgm_best WHERE NOT EXISTS (SELECT 1 FROM fts_best)
-                        ) si ON TRUE
-                        WHERE ti.project_id=%(project_id)s;
-                        """,
+                          {candidate_sql}
+                        ) si ON TRUE;
+                    """
+                    cur.execute(
+                        sql,
                         {
                             "supplier_ids": supplier_ids,
-                            "project_id": project_id,
+                            "tender_item_ids": tender_item_ids,
+                            "q_text_fulls": q_text_fulls,
+                            "q_text_cores": q_text_cores,
+                            "q_filters": q_filters,
+                            "q_likes": q_likes,
+                            "category_ids": category_ids,
+                            "qtys": qtys,
+                            "want_base_units": want_base_units,
+                            "want_base_qtys": want_base_qtys,
                             "min_score": min_score,
                             "min_rank": min_rank,
                             "fts_candidates": fts_candidates,
                             "trgm_candidates": trgm_candidates,
+                            "limit": 1,
                         },
                     )
                     rows = cur.fetchall()
             matrix: Dict[str, Dict[str, Dict[str, Any]]] = {}
             for row in rows:
                 if row["supplier_item_id"] is None:
-                    continue
-                score = row.get("score")
-                if score is not None and score < min_score:
                     continue
                 item_key = str(row["tender_item_id"])
                 sup_key = str(row["supplier_id"])
@@ -1114,6 +1310,7 @@ def create_app() -> Flask:
                     "score": _json_safe(row["score"]),
                     "rank": _json_safe(row["rank"]),
                     "mode": row.get("mode"),
+                    "unit_match": row.get("unit_match"),
                 }
             return jsonify({"matrix": matrix})
         except Exception as e:
@@ -1388,7 +1585,7 @@ def create_app() -> Flask:
                 with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                     cur.execute(
                         """
-                        SELECT id, name_input, search_name, category_id
+                        SELECT id, name_input, search_name, qty, unit_input, category_id
                         FROM tender_items
                         WHERE id=%s;
                         """,
@@ -1397,82 +1594,37 @@ def create_app() -> Flask:
                     item = cur.fetchone()
                     if not item:
                         return jsonify({"error": "not found"}), 404
-                    search_name = item.get("search_name") or ""
-                    q_user = normalize_base(q_input) if q_input else ""
-                    q_similarity = q_user or normalize_base(search_name or item.get("name_input") or "")
-                    if not q_similarity.strip():
+                    query_info = _build_tender_query_info(item, q_input=q_input)
+                    q_text_full = query_info["q_text_full"]
+                    if not q_text_full.strip():
                         return jsonify({"matches": []})
-                    q_filter = q_user or None
-                    q_like = f"%{q_filter}%" if q_filter else None
-                    cur.execute(
+                    candidate_sql = _tender_candidates_sql(
                         """
-                        WITH query AS (
-                          SELECT
-                            %(q)s::text AS q_text,
-                            websearch_to_tsquery('russian', %(q)s::text) AS tsq
-                        ),
-                        fts AS (
-                          SELECT
-                            si.id AS supplier_item_id,
-                            si.supplier_id,
-                            si.name_raw,
-                            si.unit,
-                            si.price,
-                            si.base_unit,
-                            si.base_qty,
-                            si.price_per_unit,
-                            ts_rank(si.name_search_tsv, query.tsq) AS rank,
-                            similarity(si.name_search, query.q_text) AS score,
-                            'fts'::text AS mode
-                          FROM supplier_items si, query
-                          WHERE si.supplier_id=%(supplier_id)s
-                            AND si.is_active IS TRUE
-                            AND (%(category_id)s IS NULL OR si.category_id = %(category_id)s)
-                            AND (%(q_filter)s IS NULL OR si.name_search ILIKE %(q_like)s)
-                            AND query.tsq IS NOT NULL
-                            AND si.name_search_tsv @@ query.tsq
-                            AND ts_rank(si.name_search_tsv, query.tsq) >= %(min_rank)s
-                          ORDER BY rank DESC, score DESC, si.price_per_unit ASC NULLS LAST, si.id DESC
-                          LIMIT %(fts_candidates)s
-                        ),
-                        trgm AS (
-                          SELECT
-                            si.id AS supplier_item_id,
-                            si.supplier_id,
-                            si.name_raw,
-                            si.unit,
-                            si.price,
-                            si.base_unit,
-                            si.base_qty,
-                            si.price_per_unit,
-                            0.0::float AS rank,
-                            similarity(si.name_search, query.q_text) AS score,
-                            'trgm'::text AS mode
-                          FROM supplier_items si, query
-                          WHERE si.supplier_id=%(supplier_id)s
-                            AND si.is_active IS TRUE
-                            AND (%(category_id)s IS NULL OR si.category_id = %(category_id)s)
-                            AND (%(q_filter)s IS NULL OR si.name_search ILIKE %(q_like)s)
-                            AND similarity(si.name_search, query.q_text) >= %(min_score)s
-                          ORDER BY score DESC, si.price_per_unit ASC NULLS LAST, si.id DESC
-                          LIMIT %(trgm_candidates)s
-                        ),
-                        combined AS (
-                          SELECT * FROM fts
-                          UNION ALL
-                          SELECT * FROM trgm WHERE NOT EXISTS (SELECT 1 FROM fts)
-                        )
-                        SELECT *
-                        FROM combined
-                        ORDER BY rank DESC, score DESC, price_per_unit ASC NULLS LAST, supplier_item_id DESC
-                        LIMIT %(limit)s;
-                        """,
+                        SELECT
+                          %(q_text_full)s::text AS q_text_full,
+                          %(q_text_core)s::text AS q_text_core,
+                          %(q_filter)s::text AS q_filter,
+                          %(q_like)s::text AS q_like,
+                          %(category_id)s::int AS category_id,
+                          %(want_base_unit)s::text AS want_base_unit,
+                          %(want_base_qty)s::numeric AS want_base_qty,
+                          %(tender_qty)s::numeric AS tender_qty,
+                          %(supplier_id)s::int AS supplier_id,
+                          websearch_to_tsquery('russian', %(q_text_full)s::text) AS tsq
+                        """
+                    )
+                    cur.execute(
+                        candidate_sql,
                         {
                             "supplier_id": supplier_id,
                             "category_id": item.get("category_id"),
-                            "q": q_similarity,
-                            "q_filter": q_filter,
-                            "q_like": q_like,
+                            "q_text_full": query_info["q_text_full"],
+                            "q_text_core": query_info["q_text_core"],
+                            "q_filter": query_info["q_filter"],
+                            "q_like": query_info["q_like"],
+                            "want_base_unit": query_info["want_base_unit"],
+                            "want_base_qty": query_info["want_base_qty"],
+                            "tender_qty": item.get("qty"),
                             "limit": limit_i,
                             "min_score": min_score,
                             "min_rank": min_rank,

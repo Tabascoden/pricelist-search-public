@@ -67,22 +67,33 @@ def compute_unit_metrics(name_raw: str, unit_raw: Optional[str], price: Optional
         base_unit = "l"
         base_qty = Decimal("0.001")
     elif unit_norm in {"шт", "штука", "штук", "уп", "упак", "кор", "коробка"}:
+        pack_match = re.search(r"(\d+[\,\.]?\d*)\s*(г|гр|грам).*?/\s*(\d+)\s*шт", name_lower)
+        if pack_match and unit_norm in {"уп", "упак", "кор", "коробка"}:
+            try:
+                grams = Decimal(pack_match.group(1).replace(",", "."))
+                count = Decimal(pack_match.group(3))
+                base_unit = "kg"
+                base_qty = (grams * count * Decimal("0.001")).quantize(Decimal("0.000001"))
+            except Exception:
+                base_unit = None
+                base_qty = None
         patterns = [
             (r"(\d+[\,\.]?\d*)\s*(кг)", "kg", Decimal("1")),
             (r"(\d+[\,\.]?\d*)\s*(г|гр|грам)", "kg", Decimal("0.001")),
             (r"(\d+[\,\.]?\d*)\s*(л|литр|литров)", "l", Decimal("1")),
             (r"(\d+[\,\.]?\d*)\s*(ml|мл)", "l", Decimal("0.001")),
         ]
-        for pattern, b_unit, multiplier in patterns:
-            m = re.search(pattern, name_lower)
-            if m:
-                try:
-                    val = Decimal(m.group(1).replace(",", "."))
-                    base_unit = b_unit
-                    base_qty = (val * multiplier).quantize(Decimal("0.000001"))
-                    break
-                except Exception:
-                    continue
+        if base_unit is None and base_qty is None:
+            for pattern, b_unit, multiplier in patterns:
+                m = re.search(pattern, name_lower)
+                if m:
+                    try:
+                        val = Decimal(m.group(1).replace(",", "."))
+                        base_unit = b_unit
+                        base_qty = (val * multiplier).quantize(Decimal("0.000001"))
+                        break
+                    except Exception:
+                        continue
 
     if base_qty and price:
         try:
