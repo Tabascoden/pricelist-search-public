@@ -713,9 +713,10 @@ def create_app() -> Flask:
             )
             items = [dict(r) for r in cur.fetchall()]
             for item in items:
-                name_norm = normalize_base(item.get("name_input") or "")
+                default_search = normalize_base(generate_search_name(item.get("name_input")) or "")
                 search_norm = normalize_base(item.get("search_name") or "")
-                item["search_pinned"] = bool(search_norm) and search_norm != name_norm
+                item["default_search"] = default_search
+                item["search_pinned"] = bool(search_norm) and search_norm != default_search
 
             cur.execute(
                 """
@@ -1163,12 +1164,13 @@ def create_app() -> Flask:
                     if not supplier_item:
                         return jsonify({"error": "supplier item not found"}), 404
 
-                    default_search = normalize_base(generate_search_name(item["name_input"]) or "") or None
-                    selected_search = normalize_base(generate_search_name(supplier_item["name_raw"]) or "") or None
-                    if item.get("search_name") and item["search_name"] == selected_search:
+                    default_search = normalize_base(generate_search_name(item["name_input"]) or "")
+                    target_search = normalize_base(generate_search_name(supplier_item["name_raw"]) or "")
+                    current_search = normalize_base(item.get("search_name") or "")
+                    if current_search == target_search and current_search != default_search:
                         next_search = default_search
                     else:
-                        next_search = selected_search
+                        next_search = target_search
 
                     cur.execute(
                         """
@@ -1177,11 +1179,19 @@ def create_app() -> Flask:
                         WHERE id=%s
                         RETURNING id, project_id, row_no, name_input, search_name, qty, unit_input;
                         """,
-                        (next_search, item_id),
+                        (next_search or None, item_id),
                     )
                     row = cur.fetchone()
                 conn.commit()
-            return jsonify({"item": dict(row)})
+            search_norm = normalize_base(row.get("search_name") or "")
+            search_pinned = bool(search_norm) and search_norm != default_search
+            return jsonify(
+                {
+                    "item_id": row.get("id"),
+                    "search_name": row.get("search_name") or "",
+                    "search_pinned": search_pinned,
+                }
+            )
         except Exception as e:
             return jsonify({"error": "internal error", "details": str(e)}), 500
 
