@@ -108,6 +108,29 @@ def create_app() -> Flask:
         except Exception:
             pass
 
+    def _db_error_payload(err: Exception) -> tuple[dict, int]:
+        if isinstance(err, psycopg2.OperationalError):
+            message = str(err)
+            if "password authentication failed" in message:
+                return (
+                    {
+                        "error": "db auth failed",
+                        "details": "Ошибка подключения к БД: неверный пароль для пользователя DB_USER.",
+                    },
+                    503,
+                )
+            return (
+                {
+                    "error": "db connection failed",
+                    "details": (
+                        "Ошибка подключения к БД. Проверьте переменные окружения "
+                        "DB_HOST/DB_PORT/DB_NAME/DB_USER/DB_PASSWORD."
+                    ),
+                },
+                503,
+            )
+        return {"error": "internal error", "details": str(err)}, 500
+
     def ensure_schema_migrations(conn) -> None:
         with conn.cursor() as cur:
             cur.execute(
@@ -346,9 +369,10 @@ def create_app() -> Flask:
             return jsonify({"suppliers": suppliers})
         except Exception as e:
             app.logger.exception("Failed to list suppliers")
-            return jsonify(
-                {"error": "failed to list suppliers", "details": str(e)}
-            ), 500
+            payload, status = _db_error_payload(e)
+            if payload.get("error") == "internal error":
+                payload["error"] = "failed to list suppliers"
+            return jsonify(payload), status
 
     @app.route("/api/suppliers", methods=["POST"])
     def api_create_supplier():
@@ -373,7 +397,9 @@ def create_app() -> Flask:
                 conn.rollback()
             return jsonify({"error": "supplier already exists"}), 409
         except Exception as e:
-            return jsonify({"error": "internal error", "details": str(e)}), 500
+            app.logger.exception("Failed to create supplier")
+            payload, status = _db_error_payload(e)
+            return jsonify(payload), status
 
     # ---------------- API: tenders ----------------
 
