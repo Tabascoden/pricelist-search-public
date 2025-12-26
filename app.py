@@ -23,6 +23,7 @@ from werkzeug.utils import secure_filename
 
 import import_price
 import pandas as pd
+from search_text import generate_search_name, normalize_base
 
 try:
     from openpyxl import Workbook
@@ -61,6 +62,10 @@ def create_app() -> Flask:
     MIGRATION_TABLE = os.getenv("MIGRATION_TABLE", "public.schema_migrations")
     MIGRATION_LOCK_KEY = int(os.getenv("MIGRATION_LOCK_KEY", "424242"))
     MIGRATION_STATEMENT_TIMEOUT_MS = int(os.getenv("MIGRATION_STATEMENT_TIMEOUT_MS", "0"))
+    FTS_CANDIDATE_LIMIT = int(os.getenv("FTS_CANDIDATE_LIMIT", "200"))
+    TRGM_CANDIDATE_LIMIT = int(os.getenv("TRGM_CANDIDATE_LIMIT", "200"))
+    MIN_RANK_DEFAULT = float(os.getenv("MIN_RANK_DEFAULT", "0"))
+    MIN_SCORE_DEFAULT = float(os.getenv("MIN_SCORE_DEFAULT", "0"))
 
     def db_connect():
         return psycopg2.connect(
@@ -406,13 +411,14 @@ def create_app() -> Flask:
                     cat_val = normalize_category_value(row_list[idx_cat])
                 category_id = category_map.get(cat_val) if cat_val else None
                 row_no += 1
-                items_to_insert.append((project_id, row_no, name_val, qty_val, unit_val, category_id))
+                search_name = normalize_base(generate_search_name(name_val) or "") or None
+                items_to_insert.append((project_id, row_no, name_val, search_name, qty_val, unit_val, category_id))
 
             if items_to_insert:
                 psycopg2.extras.execute_values(
                     cur,
                     """
-                    INSERT INTO tender_items(project_id, row_no, name_input, qty, unit_input, category_id)
+                    INSERT INTO tender_items(project_id, row_no, name_input, search_name, qty, unit_input, category_id)
                     VALUES %s
                     """,
                     items_to_insert,
@@ -777,13 +783,17 @@ def create_app() -> Flask:
                         (project_id,),
                     )
                     row_no = _scalar(cur.fetchone())
+                    if "search_name" in data:
+                        search_name = normalize_base(str(data.get("search_name") or "")) or None
+                    else:
+                        search_name = normalize_base(generate_search_name(name_input) or "") or None
                     cur.execute(
                         """
-                        INSERT INTO tender_items(project_id, row_no, name_input, qty, unit_input)
-                        VALUES (%s, %s, %s, %s, %s)
+                        INSERT INTO tender_items(project_id, row_no, name_input, search_name, qty, unit_input)
+                        VALUES (%s, %s, %s, %s, %s, %s)
                         RETURNING id;
                         """,
-                        (project_id, row_no, name_input, qty_val, unit_input),
+                        (project_id, row_no, name_input, search_name, qty_val, unit_input),
                     )
                     item_id = _scalar(cur.fetchone())
                 conn.commit()
@@ -808,6 +818,7 @@ def create_app() -> Flask:
         data = request.get_json(silent=True) or {}
         updates = []
         values: List[Any] = []
+        search_name_set = False
 
         if "name_input" in data:
             name_input = str(data.get("name_input") or "").strip()
@@ -815,6 +826,11 @@ def create_app() -> Flask:
                 return jsonify({"error": "name_input required"}), 400
             updates.append("name_input=%s")
             values.append(name_input)
+            if "search_name" not in data:
+                auto_search = normalize_base(generate_search_name(name_input) or "") or None
+                updates.append("search_name=%s")
+                values.append(auto_search)
+                search_name_set = True
 
         if "qty" in data:
             qty_raw = data.get("qty")
@@ -833,9 +849,9 @@ def create_app() -> Flask:
             updates.append("unit_input=%s")
             values.append(unit_input)
 
-        if "search_name" in data:
+        if "search_name" in data and not search_name_set:
             search_raw = data.get("search_name")
-            search_name = str(search_raw or "").strip() or None
+            search_name = normalize_base(str(search_raw or "")) or None
             updates.append("search_name=%s")
             values.append(search_name)
 
@@ -935,6 +951,9 @@ def create_app() -> Flask:
     def api_tenders_matrix(project_id: int):
         supplier_ids_raw = (request.args.get("supplier_ids") or "").strip()
         min_score_raw = request.args.get("min_score")
+        min_rank_raw = request.args.get("min_rank")
+        fts_candidates_raw = request.args.get("fts_candidates")
+        trgm_candidates_raw = request.args.get("trgm_candidates")
         supplier_ids: List[int] = []
         if supplier_ids_raw:
             try:
@@ -945,6 +964,18 @@ def create_app() -> Flask:
             min_score = float(min_score_raw) if min_score_raw is not None else 0.0
         except Exception:
             min_score = 0.0
+        try:
+            min_rank = float(min_rank_raw) if min_rank_raw is not None else MIN_RANK_DEFAULT
+        except Exception:
+            min_rank = MIN_RANK_DEFAULT
+        try:
+            fts_candidates = int(fts_candidates_raw) if fts_candidates_raw is not None else FTS_CANDIDATE_LIMIT
+        except Exception:
+            fts_candidates = FTS_CANDIDATE_LIMIT
+        try:
+            trgm_candidates = int(trgm_candidates_raw) if trgm_candidates_raw is not None else TRGM_CANDIDATE_LIMIT
+        except Exception:
+            trgm_candidates = TRGM_CANDIDATE_LIMIT
         if not supplier_ids:
             return jsonify({"matrix": {}})
         try:
@@ -966,23 +997,66 @@ def create_app() -> Flask:
                           si.base_unit,
                           si.base_qty,
                           si.price_per_unit,
-                          similarity(coalesce(si.name_normalized, si.name_raw), coalesce(ti.search_name, ti.name_input)) AS score
+                          si.rank AS rank,
+                          si.score AS score,
+                          si.mode AS mode
                         FROM tender_items ti
                         CROSS JOIN suppliers sup
                         LEFT JOIN LATERAL (
-                          SELECT *
-                          FROM supplier_items si
-                          WHERE si.supplier_id = sup.supplier_id
-                            AND si.is_active IS TRUE
-                            AND (ti.category_id IS NULL OR si.category_id = ti.category_id)
-                          ORDER BY similarity(coalesce(si.name_normalized, si.name_raw), coalesce(ti.search_name, ti.name_input)) DESC,
-                                   si.price_per_unit ASC NULLS LAST,
-                                   si.id DESC
-                          LIMIT 1
+                          WITH query AS (
+                            SELECT
+                              coalesce(ti.search_name, ti.name_input) AS q_text,
+                              websearch_to_tsquery('russian', coalesce(ti.search_name, ti.name_input)) AS tsq
+                          ),
+                          fts AS (
+                            SELECT
+                              si.*,
+                              ts_rank(si.name_search_tsv, query.tsq) AS rank,
+                              similarity(si.name_search, query.q_text) AS score,
+                              'fts'::text AS mode
+                            FROM supplier_items si, query
+                            WHERE si.supplier_id = sup.supplier_id
+                              AND si.is_active IS TRUE
+                              AND (ti.category_id IS NULL OR si.category_id = ti.category_id)
+                              AND si.name_search_tsv @@ query.tsq
+                              AND ts_rank(si.name_search_tsv, query.tsq) >= %(min_rank)s
+                            ORDER BY rank DESC, score DESC, si.price_per_unit ASC NULLS LAST, si.id DESC
+                            LIMIT %(fts_candidates)s
+                          ),
+                          fts_best AS (
+                            SELECT * FROM fts ORDER BY rank DESC, score DESC, price_per_unit ASC NULLS LAST, id DESC LIMIT 1
+                          ),
+                          trgm AS (
+                            SELECT
+                              si.*,
+                              0.0::float AS rank,
+                              similarity(si.name_search, query.q_text) AS score,
+                              'trgm'::text AS mode
+                            FROM supplier_items si, query
+                            WHERE si.supplier_id = sup.supplier_id
+                              AND si.is_active IS TRUE
+                              AND (ti.category_id IS NULL OR si.category_id = ti.category_id)
+                              AND similarity(si.name_search, query.q_text) >= %(min_score)s
+                            ORDER BY score DESC, si.price_per_unit ASC NULLS LAST, si.id DESC
+                            LIMIT %(trgm_candidates)s
+                          ),
+                          trgm_best AS (
+                            SELECT * FROM trgm ORDER BY score DESC, price_per_unit ASC NULLS LAST, id DESC LIMIT 1
+                          )
+                          SELECT * FROM fts_best
+                          UNION ALL
+                          SELECT * FROM trgm_best WHERE NOT EXISTS (SELECT 1 FROM fts_best)
                         ) si ON TRUE
                         WHERE ti.project_id=%(project_id)s;
                         """,
-                        {"supplier_ids": supplier_ids, "project_id": project_id},
+                        {
+                            "supplier_ids": supplier_ids,
+                            "project_id": project_id,
+                            "min_score": min_score,
+                            "min_rank": min_rank,
+                            "fts_candidates": fts_candidates,
+                            "trgm_candidates": trgm_candidates,
+                        },
                     )
                     rows = cur.fetchall()
             matrix: Dict[str, Dict[str, Dict[str, Any]]] = {}
@@ -1004,6 +1078,8 @@ def create_app() -> Flask:
                     "base_qty": _json_safe(row["base_qty"]),
                     "price_per_unit": _json_safe(row["price_per_unit"]),
                     "score": _json_safe(row["score"]),
+                    "rank": _json_safe(row["rank"]),
+                    "mode": row.get("mode"),
                 }
             return jsonify({"matrix": matrix})
         except Exception as e:
@@ -1241,6 +1317,10 @@ def create_app() -> Flask:
         supplier_id = request.args.get("supplier_id")
         limit = request.args.get("limit") or "25"
         q_input = (request.args.get("q") or "").strip()
+        min_score_raw = request.args.get("min_score")
+        min_rank_raw = request.args.get("min_rank")
+        fts_candidates_raw = request.args.get("fts_candidates")
+        trgm_candidates_raw = request.args.get("trgm_candidates")
         try:
             supplier_id = int(supplier_id) if supplier_id is not None else None
         except Exception:
@@ -1250,6 +1330,22 @@ def create_app() -> Flask:
         except Exception:
             limit_i = 25
         limit_i = max(1, min(limit_i, 50))
+        try:
+            min_score = float(min_score_raw) if min_score_raw is not None else MIN_SCORE_DEFAULT
+        except Exception:
+            min_score = MIN_SCORE_DEFAULT
+        try:
+            min_rank = float(min_rank_raw) if min_rank_raw is not None else MIN_RANK_DEFAULT
+        except Exception:
+            min_rank = MIN_RANK_DEFAULT
+        try:
+            fts_candidates = int(fts_candidates_raw) if fts_candidates_raw is not None else FTS_CANDIDATE_LIMIT
+        except Exception:
+            fts_candidates = FTS_CANDIDATE_LIMIT
+        try:
+            trgm_candidates = int(trgm_candidates_raw) if trgm_candidates_raw is not None else TRGM_CANDIDATE_LIMIT
+        except Exception:
+            trgm_candidates = TRGM_CANDIDATE_LIMIT
         if supplier_id is None:
             return jsonify({"error": "supplier_id is required"}), 400
         try:
@@ -1267,30 +1363,74 @@ def create_app() -> Flask:
                     item = cur.fetchone()
                     if not item:
                         return jsonify({"error": "not found"}), 404
-                    q_filter = q_input or None
                     search_name = item.get("search_name") or ""
-                    q_similarity = q_filter or (search_name or item.get("name_input") or "")
+                    q_user = normalize_base(q_input) if q_input else ""
+                    q_similarity = q_user or normalize_base(search_name or item.get("name_input") or "")
+                    if not q_similarity.strip():
+                        return jsonify({"matches": []})
+                    q_filter = q_user or None
                     q_like = f"%{q_filter}%" if q_filter else None
                     cur.execute(
                         """
-                        SELECT
-                          si.id AS supplier_item_id,
-                          si.supplier_id,
-                          si.name_raw,
-                          si.unit,
-                          si.price,
-                          si.base_unit,
-                          si.base_qty,
-                          si.price_per_unit,
-                          similarity(coalesce(si.name_normalized, si.name_raw), %(q)s) AS score
-                        FROM supplier_items si
-                        WHERE si.supplier_id=%(supplier_id)s
-                          AND si.is_active IS TRUE
-                          AND (%(category_id)s IS NULL OR si.category_id = %(category_id)s)
-                          AND (%(q_filter)s IS NULL OR coalesce(si.name_normalized, si.name_raw) ILIKE %(q_like)s)
-                        ORDER BY similarity(coalesce(si.name_normalized, si.name_raw), %(q)s) DESC,
-                                 si.price_per_unit ASC NULLS LAST,
-                                 si.id DESC
+                        WITH query AS (
+                          SELECT
+                            %(q)s::text AS q_text,
+                            websearch_to_tsquery('russian', %(q)s::text) AS tsq
+                        ),
+                        fts AS (
+                          SELECT
+                            si.id AS supplier_item_id,
+                            si.supplier_id,
+                            si.name_raw,
+                            si.unit,
+                            si.price,
+                            si.base_unit,
+                            si.base_qty,
+                            si.price_per_unit,
+                            ts_rank(si.name_search_tsv, query.tsq) AS rank,
+                            similarity(si.name_search, query.q_text) AS score,
+                            'fts'::text AS mode
+                          FROM supplier_items si, query
+                          WHERE si.supplier_id=%(supplier_id)s
+                            AND si.is_active IS TRUE
+                            AND (%(category_id)s IS NULL OR si.category_id = %(category_id)s)
+                            AND (%(q_filter)s IS NULL OR si.name_search ILIKE %(q_like)s)
+                            AND query.tsq IS NOT NULL
+                            AND si.name_search_tsv @@ query.tsq
+                            AND ts_rank(si.name_search_tsv, query.tsq) >= %(min_rank)s
+                          ORDER BY rank DESC, score DESC, si.price_per_unit ASC NULLS LAST, si.id DESC
+                          LIMIT %(fts_candidates)s
+                        ),
+                        trgm AS (
+                          SELECT
+                            si.id AS supplier_item_id,
+                            si.supplier_id,
+                            si.name_raw,
+                            si.unit,
+                            si.price,
+                            si.base_unit,
+                            si.base_qty,
+                            si.price_per_unit,
+                            0.0::float AS rank,
+                            similarity(si.name_search, query.q_text) AS score,
+                            'trgm'::text AS mode
+                          FROM supplier_items si, query
+                          WHERE si.supplier_id=%(supplier_id)s
+                            AND si.is_active IS TRUE
+                            AND (%(category_id)s IS NULL OR si.category_id = %(category_id)s)
+                            AND (%(q_filter)s IS NULL OR si.name_search ILIKE %(q_like)s)
+                            AND similarity(si.name_search, query.q_text) >= %(min_score)s
+                          ORDER BY score DESC, si.price_per_unit ASC NULLS LAST, si.id DESC
+                          LIMIT %(trgm_candidates)s
+                        ),
+                        combined AS (
+                          SELECT * FROM fts
+                          UNION ALL
+                          SELECT * FROM trgm WHERE NOT EXISTS (SELECT 1 FROM fts)
+                        )
+                        SELECT *
+                        FROM combined
+                        ORDER BY rank DESC, score DESC, price_per_unit ASC NULLS LAST, supplier_item_id DESC
                         LIMIT %(limit)s;
                         """,
                         {
@@ -1300,6 +1440,10 @@ def create_app() -> Flask:
                             "q_filter": q_filter,
                             "q_like": q_like,
                             "limit": limit_i,
+                            "min_score": min_score,
+                            "min_rank": min_rank,
+                            "fts_candidates": fts_candidates,
+                            "trgm_candidates": trgm_candidates,
                         },
                     )
                     matches = [dict(r) for r in cur.fetchall()]
@@ -1998,6 +2142,9 @@ def create_app() -> Flask:
             }[sort]
 
             sql = f"""
+                WITH query AS (
+                  SELECT websearch_to_tsquery('russian', %(q)s) AS tsq
+                )
                 SELECT
                   si.id,
                   si.supplier_id,
@@ -2009,14 +2156,14 @@ def create_app() -> Flask:
                   si.base_qty,
                   si.price_per_unit,
                   si.category_id,
-                  ts_rank(to_tsvector('russian', si.name_raw),
-                          websearch_to_tsquery('russian', %(q)s)) AS rank
+                  ts_rank(si.name_search_tsv, query.tsq) AS rank
                 FROM supplier_items si
                 JOIN suppliers s ON s.id = si.supplier_id
+                CROSS JOIN query
                 WHERE {" AND ".join(where)}
                   AND (
-                    to_tsvector('russian', si.name_raw) @@ websearch_to_tsquery('russian', %(q)s)
-                    OR si.name_raw ILIKE '%%' || %(q)s || '%%'
+                    si.name_search_tsv @@ query.tsq
+                    OR si.name_search ILIKE '%%' || %(q)s || '%%'
                   )
                 ORDER BY {order_by}
                 LIMIT %(limit)s;

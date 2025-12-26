@@ -16,6 +16,8 @@ from psycopg2.extras import execute_values
 
 import pandas as pd
 
+from search_text import generate_supplier_name_search
+
 
 NAME_KEYS = ["наименование", "наименованиетовара", "товар", "описание", "позиция", "product", "item", "название"]
 CODE_KEYS = ["код", "кодтовара", "артикул", "art", "sku", "код1с", "штрихкод", "баркод"]
@@ -61,11 +63,15 @@ def compute_unit_metrics(name_raw: str, unit_raw: Optional[str], price: Optional
     elif unit_norm in {"л", "л", "литр", "литров", "l"}:
         base_unit = "l"
         base_qty = Decimal("1")
+    elif unit_norm in {"мл", "ml"}:
+        base_unit = "l"
+        base_qty = Decimal("0.001")
     elif unit_norm in {"шт", "штука", "штук", "уп", "упак", "кор", "коробка"}:
         patterns = [
             (r"(\d+[\,\.]?\d*)\s*(кг)", "kg", Decimal("1")),
             (r"(\d+[\,\.]?\d*)\s*(г|гр|грам)", "kg", Decimal("0.001")),
-            (r"(\d+[\,\.]?\d*)\s*(л|литр|ml|мл)", "l", Decimal("0.001")),
+            (r"(\d+[\,\.]?\d*)\s*(л|литр|литров)", "l", Decimal("1")),
+            (r"(\d+[\,\.]?\d*)\s*(ml|мл)", "l", Decimal("0.001")),
         ]
         for pattern, b_unit, multiplier in patterns:
             m = re.search(pattern, name_lower)
@@ -126,6 +132,7 @@ def ensure_schema_compare(conn):
             """
         )
         cur.execute("ALTER TABLE supplier_items ADD COLUMN IF NOT EXISTS name_normalized text;")
+        cur.execute("ALTER TABLE supplier_items ADD COLUMN IF NOT EXISTS name_search text;")
         cur.execute("ALTER TABLE supplier_items ADD COLUMN IF NOT EXISTS base_unit text;")
         cur.execute("ALTER TABLE supplier_items ADD COLUMN IF NOT EXISTS base_qty numeric(12,6);")
         cur.execute("ALTER TABLE supplier_items ADD COLUMN IF NOT EXISTS price_per_unit numeric(12,4);")
@@ -527,7 +534,7 @@ def import_price_file(
                     """
                     INSERT INTO supplier_items
                       (supplier_id, price_list_file_id, external_code, name_raw, unit, price, currency, is_active,
-                       name_normalized, base_unit, base_qty, price_per_unit, category_id)
+                       name_normalized, name_search, base_unit, base_qty, price_per_unit, category_id)
                     VALUES %s
                     """,
                     batch,
@@ -587,6 +594,7 @@ def import_price_file(
                 unit_raw = get(col_map["unit"])
 
                 name_norm = normalize_name(name_raw)
+                name_search = generate_supplier_name_search(name_raw, unit_raw) or name_norm
                 base_unit, base_qty, price_per_unit = compute_unit_metrics(name_raw, unit_raw, price_val)
                 category_code = detect_category(name_raw)
                 category_id = category_map.get(category_code) if category_code else None
@@ -601,6 +609,7 @@ def import_price_file(
                     "RUB",
                     True,
                     name_norm,
+                    name_search,
                     base_unit,
                     base_qty,
                     price_per_unit,
