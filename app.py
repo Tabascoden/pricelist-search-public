@@ -352,10 +352,14 @@ def create_app() -> Flask:
 
     @app.route("/api/suppliers", methods=["POST"])
     def api_create_supplier():
-        data = request.get_json(silent=True) or {}
-        name = (data.get("name") or "").strip()
+        data = request.get_json(silent=True)
+        if not data:
+            data = request.form.to_dict()
+        name = (data.get("name") if data else "") or ""
+        name = name.strip()
         if not name:
             return jsonify({"error": "name is required"}), 400
+        conn = None
         try:
             with db_connect() as conn:
                 ensure_schema(conn)
@@ -364,6 +368,10 @@ def create_app() -> Flask:
                     row = cur.fetchone()
                 conn.commit()
             return jsonify({"supplier": dict(row)})
+        except psycopg2.errors.UniqueViolation:
+            if conn:
+                conn.rollback()
+            return jsonify({"error": "supplier already exists"}), 409
         except Exception as e:
             return jsonify({"error": "internal error", "details": str(e)}), 500
 
