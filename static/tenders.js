@@ -46,8 +46,6 @@
     return `${fmtNum(n, 2)} ₽`;
   };
 
-  const normalizeName = (value) => String(value ?? "").trim().toLowerCase();
-
   const parseQtyValue = (value) => {
     const raw = String(value ?? "").trim();
     if (!raw) {
@@ -298,6 +296,12 @@
     const rows = (state.matchModal.rows || [])
       .map(m => {
         const supplierPrice = m.price;
+        const starActive = item?.star_supplier_item_id != null
+          && Number(item.star_supplier_item_id) === Number(m.supplier_item_id);
+        const starClass = starActive ? "btn star-picked" : "btn";
+        const starTitle = starActive
+          ? "Снять звездочку (вернуть поиск по номенклатуре)"
+          : "Искать по этому названию (уточнить подбор)";
         return `
           <tr>
             <td>${esc(m.name_raw || "")}</td>
@@ -305,6 +309,7 @@
             <td>${esc(fmtMoney(m.price_per_unit ?? m.price))}</td>
             <td>
               <button class="btn primary" data-pick="1" data-supplier-item-id="${esc(m.supplier_item_id)}">Выбрать</button>
+              <button class="${starClass}" title="${esc(starTitle)}" data-star="1" data-supplier-item-id="${esc(m.supplier_item_id)}">★</button>
             </td>
           </tr>
         `;
@@ -318,6 +323,19 @@
         const supplierItemId = Number(btn.getAttribute("data-supplier-item-id"));
         await pickForTable(state.matchModal.itemId, supplierItemId);
         closeMatchModal();
+      };
+    });
+
+    $$("button[data-star]", body).forEach(btn => {
+      btn.onclick = async () => {
+        const supplierItemId = Number(btn.getAttribute("data-supplier-item-id"));
+        await apiJson(`/api/tenders/items/${state.matchModal.itemId}/star`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ supplier_item_id: supplierItemId }),
+        });
+        closeMatchModal();
+        await reloadProjectHard();
       };
     });
   }
@@ -594,8 +612,6 @@
       const selectedOfferId = it.selected_offer_id ? Number(it.selected_offer_id) : null;
       const cartOffer = selectedOfferId ? (it.offers || []).find(o => Number(o.id) === selectedOfferId) : null;
       const pickedSupplierId = cartOffer?.supplier_id != null ? Number(cartOffer.supplier_id) : null;
-      let rowStarred = false;
-
       const rowCells = supplierIds.map(sid => {
         const key = `${it.id}:${sid}`;
         const blocked = isBlocked(it.id, sid);
@@ -642,17 +658,13 @@
           (!picked && bestSid === sid) ? "best" : ""
         ].filter(Boolean).join(" ");
 
-        const searchName = normalizeName(it.search_name);
-        const matchName = normalizeName(m?.name_raw);
-        const canStar = Boolean(it.search_pinned);
-        let starActive = canStar && searchName && matchName && matchName.includes(searchName);
-        if (starActive && rowStarred) {
-          starActive = false;
-        } else if (starActive) {
-          rowStarred = true;
-        }
+        const starActive = it.star_supplier_item_id != null
+          && Number(it.star_supplier_item_id) === Number(m.supplier_item_id);
         const cartClass = picked ? "iconBtn cart-picked" : "iconBtn";
         const starClass = starActive ? "iconBtn star-picked" : "iconBtn";
+        const starTitle = starActive
+          ? "Снять звездочку (вернуть поиск по номенклатуре)"
+          : "Искать по этому названию (уточнить подбор)";
         return `
           <td class="${cls}">
             <div class="supName">${esc(m.name_raw || "")}</div>
@@ -664,7 +676,7 @@
               <button class="iconBtn" title="Скрыть" data-block="${esc(key)}">✕</button>
               <button class="iconBtn" title="Найти другой" data-find="1" data-item-id="${esc(it.id)}" data-supplier-id="${esc(sid)}">🔍</button>
               <button class="${cartClass}" title="Выбрать в корзину" data-pick="1" data-item-id="${esc(it.id)}" data-supplier-item-id="${esc(m.supplier_item_id)}">🛒</button>
-              <button class="${starClass}" title="Искать по названию" data-star="1" data-item-id="${esc(it.id)}" data-supplier-item-id="${esc(m.supplier_item_id)}" data-name-raw="${esc(m.name_raw || "")}">★</button>
+              <button class="${starClass}" title="${esc(starTitle)}" data-star="1" data-item-id="${esc(it.id)}" data-supplier-item-id="${esc(m.supplier_item_id)}">★</button>
             </div>
           </td>
         `;

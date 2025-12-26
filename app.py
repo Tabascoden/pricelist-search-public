@@ -23,7 +23,7 @@ from werkzeug.utils import secure_filename
 
 import import_price
 import pandas as pd
-from search_text import generate_search_name, normalize_base
+from search_text import generate_pinned_search_name, generate_search_name, normalize_base
 
 try:
     from openpyxl import Workbook
@@ -493,7 +493,10 @@ def create_app() -> Flask:
         search_name = item.get("search_name") or ""
         name_norm = normalize_base(name_input) or ""
         search_norm = normalize_base(search_name) or ""
-        pinned = bool(search_norm) and (search_norm != name_norm)
+        default_search = normalize_base(generate_search_name(name_input) or "")
+        pinned = bool(search_norm) and (search_norm != default_search)
+        if item.get("star_supplier_item_id"):
+            pinned = True
         if q_user:
             q_text_full = q_user
             q_text_core = q_user
@@ -501,8 +504,8 @@ def create_app() -> Flask:
             q_text_full = search_norm
             q_text_core = search_norm
         else:
-            q_text_full = name_norm
-            q_text_core = search_norm or name_norm
+            q_text_full = default_search or name_norm
+            q_text_core = default_search or search_norm or name_norm
         q_filter = q_user or None
         q_like = f"%{q_filter}%" if q_filter else None
         prefer_fresh = 0
@@ -704,7 +707,8 @@ def create_app() -> Flask:
 
             cur.execute(
                 """
-                SELECT ti.id, ti.project_id, ti.row_no, ti.name_input, ti.search_name, ti.qty, ti.unit_input, ti.category_id, ti.selected_offer_id
+                SELECT ti.id, ti.project_id, ti.row_no, ti.name_input, ti.search_name, ti.qty, ti.unit_input, ti.category_id, ti.selected_offer_id,
+                       ti.star_supplier_item_id
                 FROM tender_items ti
                 WHERE ti.project_id=%s
                 ORDER BY ti.row_no ASC, ti.id ASC;
@@ -716,7 +720,7 @@ def create_app() -> Flask:
                 default_search = normalize_base(generate_search_name(item.get("name_input")) or "")
                 search_norm = normalize_base(item.get("search_name") or "")
                 item["default_search"] = default_search
-                item["search_pinned"] = bool(search_norm) and search_norm != default_search
+                item["search_pinned"] = bool(item.get("star_supplier_item_id")) or (search_norm != default_search)
 
             cur.execute(
                 """
@@ -1150,14 +1154,14 @@ def create_app() -> Flask:
                 ensure_schema_compare(conn)
                 with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                     cur.execute(
-                        "SELECT id, name_input, search_name FROM tender_items WHERE id=%s;",
+                        "SELECT id, name_input, search_name, star_supplier_item_id FROM tender_items WHERE id=%s;",
                         (item_id,),
                     )
                     item = cur.fetchone()
                     if not item:
                         return jsonify({"error": "tender item not found"}), 404
                     cur.execute(
-                        "SELECT name_raw FROM supplier_items WHERE id=%s;",
+                        "SELECT id, name_raw, unit FROM supplier_items WHERE id=%s;",
                         (supplier_item_id,),
                     )
                     supplier_item = cur.fetchone()
@@ -1165,31 +1169,35 @@ def create_app() -> Flask:
                         return jsonify({"error": "supplier item not found"}), 404
 
                     default_search = normalize_base(generate_search_name(item["name_input"]) or "")
-                    target_search = normalize_base(generate_search_name(supplier_item["name_raw"]) or "")
-                    current_search = normalize_base(item.get("search_name") or "")
-                    if current_search == target_search and current_search != default_search:
+                    supplier_text = f"{supplier_item.get('name_raw') or ''} {supplier_item.get('unit') or ''}".strip()
+                    target_search = normalize_base(generate_pinned_search_name(supplier_text) or "")
+                    if item.get("star_supplier_item_id") == supplier_item_id:
+                        next_star_id = None
                         next_search = default_search
                     else:
+                        next_star_id = supplier_item_id
                         next_search = target_search
 
                     cur.execute(
                         """
                         UPDATE tender_items
-                        SET search_name=%s
+                        SET search_name=%s,
+                            star_supplier_item_id=%s
                         WHERE id=%s
-                        RETURNING id, project_id, row_no, name_input, search_name, qty, unit_input;
+                        RETURNING id, project_id, row_no, name_input, search_name, qty, unit_input, star_supplier_item_id;
                         """,
-                        (next_search or None, item_id),
+                        (next_search or None, next_star_id, item_id),
                     )
                     row = cur.fetchone()
                 conn.commit()
             search_norm = normalize_base(row.get("search_name") or "")
-            search_pinned = bool(search_norm) and search_norm != default_search
+            search_pinned = bool(row.get("star_supplier_item_id")) or (search_norm != default_search)
             return jsonify(
                 {
                     "item_id": row.get("id"),
                     "search_name": row.get("search_name") or "",
                     "search_pinned": search_pinned,
+                    "star_supplier_item_id": row.get("star_supplier_item_id"),
                 }
             )
         except Exception as e:
@@ -1299,7 +1307,7 @@ def create_app() -> Flask:
                 with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                     cur.execute(
                         """
-                        SELECT id, name_input, search_name, qty, unit_input, category_id
+                        SELECT id, name_input, search_name, qty, unit_input, category_id, star_supplier_item_id
                         FROM tender_items
                         WHERE project_id=%s
                         ORDER BY row_no ASC, id ASC;
@@ -1720,7 +1728,7 @@ def create_app() -> Flask:
                 with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                     cur.execute(
                         """
-                        SELECT id, name_input, search_name, qty, unit_input, category_id
+                        SELECT id, name_input, search_name, qty, unit_input, category_id, star_supplier_item_id
                         FROM tender_items
                         WHERE id=%s;
                         """,
