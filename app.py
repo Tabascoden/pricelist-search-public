@@ -2129,7 +2129,11 @@ def create_app() -> Flask:
             app.logger.exception("Failed to import upload for supplier %s", supplier_id)
             # если импорт упал — файл оставляем (чтобы можно было скачать/проверить), но можно удалить:
             # _safe_remove(dst_path)
-            return jsonify({"error": "upload/import failed", "details": "Ошибка загрузки: не удалось прочитать файл"}), 500
+            err_text = str(e).strip()
+            details = "Ошибка загрузки: не удалось прочитать файл"
+            if err_text:
+                details = f"Ошибка загрузки: {err_text}"
+            return jsonify({"error": "upload/import failed", "details": details}), 500
 
     # ---------------- Search ----------------
     @app.route("/search", methods=["GET"])
