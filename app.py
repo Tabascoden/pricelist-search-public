@@ -712,6 +712,10 @@ def create_app() -> Flask:
                 (project_id,),
             )
             items = [dict(r) for r in cur.fetchall()]
+            for item in items:
+                name_norm = normalize_base(item.get("name_input") or "")
+                search_norm = normalize_base(item.get("search_name") or "")
+                item["search_pinned"] = bool(search_norm) and search_norm != name_norm
 
             cur.execute(
                 """

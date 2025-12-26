@@ -594,6 +594,7 @@
       const selectedOfferId = it.selected_offer_id ? Number(it.selected_offer_id) : null;
       const cartOffer = selectedOfferId ? (it.offers || []).find(o => Number(o.id) === selectedOfferId) : null;
       const pickedSupplierId = cartOffer?.supplier_id != null ? Number(cartOffer.supplier_id) : null;
+      let rowStarred = false;
 
       const rowCells = supplierIds.map(sid => {
         const key = `${it.id}:${sid}`;
@@ -643,7 +644,13 @@
 
         const searchName = normalizeName(it.search_name);
         const matchName = normalizeName(m?.name_raw);
-        const starActive = !!searchName && !!matchName && matchName.includes(searchName);
+        const canStar = Boolean(it.search_pinned && searchName && matchName);
+        let starActive = canStar && matchName.includes(searchName);
+        if (starActive && rowStarred) {
+          starActive = false;
+        } else if (starActive) {
+          rowStarred = true;
+        }
         const cartClass = picked ? "iconBtn cart-picked" : "iconBtn";
         const starClass = starActive ? "iconBtn star-picked" : "iconBtn";
         return `
