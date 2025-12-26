@@ -66,6 +66,9 @@ def create_app() -> Flask:
     TRGM_CANDIDATE_LIMIT = int(os.getenv("TRGM_CANDIDATE_LIMIT", "200"))
     MIN_RANK_DEFAULT = float(os.getenv("MIN_RANK_DEFAULT", "0"))
     MIN_SCORE_DEFAULT = float(os.getenv("MIN_SCORE_DEFAULT", "0"))
+    TENDER_TEXT_TIE_ABS_EPS = float(os.getenv("TENDER_TEXT_TIE_ABS_EPS", "0.01"))
+    TENDER_TEXT_TIE_REL_EPS = float(os.getenv("TENDER_TEXT_TIE_REL_EPS", "0.05"))
+    TENDER_MATCH_DEBUG = _env_bool("TENDER_MATCH_DEBUG", False)
 
     def db_connect():
         return psycopg2.connect(
@@ -605,6 +608,7 @@ def create_app() -> Flask:
             ranked AS (
               SELECT
                 combined.*,
+                query.query_item_id AS query_item_id,
                 CASE WHEN combined.mode='fts' THEN combined.rank ELSE combined.score END AS match_quality,
                 CASE
                   WHEN query.want_base_unit IS NOT NULL
@@ -648,15 +652,37 @@ def create_app() -> Flask:
               FROM ranked, query
               WHERE
                 (ranked.rank >= %(min_rank)s OR ranked.score >= %(min_score)s)
+            ),
+            scored AS (
+              SELECT
+                filtered.*,
+                max(match_quality) OVER (
+                  PARTITION BY query_item_id, supplier_id, freshness_match, unit_match, pass_score
+                ) AS best_quality
+              FROM filtered
+            ),
+            ordered AS (
+              SELECT
+                scored.*,
+                (best_quality - match_quality) AS quality_gap,
+                CASE
+                  WHEN best_quality IS NULL THEN FALSE
+                  WHEN best_quality - match_quality
+                    <= greatest(%(tender_text_tie_abs_eps)s, best_quality * %(tender_text_tie_rel_eps)s)
+                  THEN TRUE
+                  ELSE FALSE
+                END AS is_text_tie
+              FROM scored
             )
             SELECT *
-            FROM filtered
+            FROM ordered
             ORDER BY freshness_match DESC,
                      unit_match DESC,
                      pass_score DESC,
                      match_quality DESC,
-                     total_cost ASC NULLS LAST,
-                     price_per_unit ASC NULLS LAST,
+                     is_text_tie DESC,
+                     CASE WHEN is_text_tie THEN total_cost END ASC NULLS LAST,
+                     CASE WHEN is_text_tie THEN price_per_unit END ASC NULLS LAST,
                      supplier_item_id DESC
             LIMIT %(limit)s
         """
@@ -1345,6 +1371,7 @@ def create_app() -> Flask:
                     candidate_sql = _tender_candidates_sql(
                         """
                         SELECT
+                          ti.tender_item_id AS query_item_id,
                           ti.q_text_full AS q_text_full,
                           ti.q_text_core AS q_text_core,
                           ti.q_filter AS q_filter,
@@ -1431,6 +1458,8 @@ def create_app() -> Flask:
                             "min_rank": min_rank,
                             "fts_candidates": fts_candidates,
                             "trgm_candidates": trgm_candidates,
+                            "tender_text_tie_abs_eps": TENDER_TEXT_TIE_ABS_EPS,
+                            "tender_text_tie_rel_eps": TENDER_TEXT_TIE_REL_EPS,
                             "limit": 1,
                         },
                     )
@@ -1744,6 +1773,7 @@ def create_app() -> Flask:
                     candidate_sql = _tender_candidates_sql(
                         """
                         SELECT
+                          %(query_item_id)s::int AS query_item_id,
                           %(q_text_full)s::text AS q_text_full,
                           %(q_text_core)s::text AS q_text_core,
                           %(q_filter)s::text AS q_filter,
@@ -1762,6 +1792,7 @@ def create_app() -> Flask:
                         candidate_sql,
                         {
                             "supplier_id": supplier_id,
+                            "query_item_id": item_id,
                             "category_id": item.get("category_id"),
                             "q_text_full": query_info["q_text_full"],
                             "q_text_core": query_info["q_text_core"],
@@ -1777,9 +1808,22 @@ def create_app() -> Flask:
                             "min_rank": min_rank,
                             "fts_candidates": fts_candidates,
                             "trgm_candidates": trgm_candidates,
+                            "tender_text_tie_abs_eps": TENDER_TEXT_TIE_ABS_EPS,
+                            "tender_text_tie_rel_eps": TENDER_TEXT_TIE_REL_EPS,
                         },
                     )
                     matches = [dict(r) for r in cur.fetchall()]
+            diagnostics_fields = {
+                "best_quality",
+                "quality_gap",
+                "is_text_tie",
+                "total_cost",
+                "query_item_id",
+            }
+            if not TENDER_MATCH_DEBUG:
+                for match in matches:
+                    for field in diagnostics_fields:
+                        match.pop(field, None)
             return jsonify({"matches": [{k: _json_safe(v) for k, v in m.items()} for m in matches]})
         except Exception as e:
             return jsonify({"error": "internal error", "details": str(e)}), 500
