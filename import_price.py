@@ -430,7 +430,34 @@ def list_excel_sheets(path: str) -> List[str]:
         with pd.ExcelFile(data, engine=engine) as xls:
             return list(xls.sheet_names)
     except Exception as e:
-        raise RuntimeError(f"Не удалось прочитать листы из файла {path}: {e}") from e
+        raise RuntimeError(f"Не удалось прочитать листы из файла: {e}") from e
+
+
+def _looks_like_text_data(path: str) -> bool:
+    try:
+        with open(path, "rb") as f:
+            sample = f.read(4096)
+    except OSError:
+        return False
+
+    if b"\x00" in sample:
+        return False
+
+    decoded = None
+    for enc in ("utf-8-sig", "utf-8", "cp1251", "latin1"):
+        try:
+            decoded = sample.decode(enc)
+            break
+        except UnicodeDecodeError:
+            continue
+
+    if decoded is None:
+        return False
+
+    if "\n" not in decoded and "\r" not in decoded:
+        return False
+
+    return any(d in decoded for d in (",", ";", "\t", "|"))
 
 
 def load_excel_rows(file_path: str, ext: str, target_sheets: Optional[List[str]] = None):
@@ -650,20 +677,30 @@ def import_price_file(
 
         # --- Excel ---
         if ext in (".xlsx", ".xlsm", ".xls"):
-            available = list_excel_sheets(file_path)
+            try:
+                available = list_excel_sheets(file_path)
 
-            if sheet_mode == "selected" and sheet_names:
-                target = [s for s in sheet_names if s in available]
-            else:
-                target = available  # auto = все листы
+                if sheet_mode == "selected" and sheet_names:
+                    target = [s for s in sheet_names if s in available]
+                else:
+                    target = available  # auto = все листы
 
-            for sname, rows in load_excel_rows(file_path, ext, target):
-                if not rows:
-                    stats.append({"sheet": sname, "imported": 0, "skipped": 0, "reason": "empty"})
-                    continue
+                for sname, rows in load_excel_rows(file_path, ext, target):
+                    if not rows:
+                        stats.append({"sheet": sname, "imported": 0, "skipped": 0, "reason": "empty"})
+                        continue
 
-                headers, data_rows, header_idx = _find_header_row(rows)
-                process_rows(sname, headers, iter(data_rows))
+                    headers, data_rows, header_idx = _find_header_row(rows)
+                    process_rows(sname, headers, iter(data_rows))
+            except Exception:
+                if _looks_like_text_data(file_path):
+                    headers, rows = load_from_csv(file_path)
+                    if not rows:
+                        stats.append({"sheet": "CSV (fallback)", "imported": 0, "skipped": 0, "reason": "empty"})
+                    else:
+                        process_rows("CSV (fallback)", headers, iter(rows))
+                else:
+                    raise
 
         # --- CSV ---
         else:
