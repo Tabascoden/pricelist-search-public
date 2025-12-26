@@ -2171,7 +2171,45 @@ def create_app() -> Flask:
             sort = "rank"
 
         if q:
-            params["q"] = q
+            q_clean = normalize_base(generate_search_name(q) or q)
+            if not q_clean:
+                q_clean = normalize_base(q)
+            unit_match = re.search(r"\b(\d+(?:[\.,]\d+)?)\s*(кг|г|гр|л|мл|kg|g|gr|l|ml)\b", q, re.IGNORECASE)
+            base_unit = None
+            base_qty = None
+            if unit_match:
+                qty_raw = unit_match.group(1).replace(",", ".")
+                unit_raw = unit_match.group(2).lower()
+                try:
+                    qty_val = float(qty_raw)
+                except Exception:
+                    qty_val = None
+                unit_map = {
+                    "кг": ("kg", 1.0),
+                    "kg": ("kg", 1.0),
+                    "г": ("g", 1.0),
+                    "гр": ("g", 1.0),
+                    "g": ("g", 1.0),
+                    "gr": ("g", 1.0),
+                    "л": ("l", 1.0),
+                    "l": ("l", 1.0),
+                    "мл": ("ml", 1.0),
+                    "ml": ("ml", 1.0),
+                }
+                unit_info = unit_map.get(unit_raw)
+                if unit_info and qty_val is not None:
+                    base_unit = unit_info[0]
+                    base_qty = qty_val * unit_info[1]
+            if base_unit and base_qty:
+                params["base_unit"] = base_unit
+                params["base_qty_min"] = base_qty * 0.9
+                params["base_qty_max"] = base_qty * 1.1
+                where.append("si.base_unit = %(base_unit)s")
+                where.append("si.base_qty BETWEEN %(base_qty_min)s AND %(base_qty_max)s")
+            params["q_raw"] = q
+            params["q"] = q_clean
+            params["q_like"] = f"%{q_clean}%" if q_clean else None
+            params["q_like_raw"] = f"%{q}%" if q else None
             order_by = {
                 "rank": "rank DESC, si.price ASC NULLS LAST, si.id DESC",
                 "price_asc": "si.price ASC NULLS LAST, rank DESC, si.id DESC",
@@ -2200,8 +2238,9 @@ def create_app() -> Flask:
                 CROSS JOIN query
                 WHERE {" AND ".join(where)}
                   AND (
-                    si.name_search_tsv @@ query.tsq
-                    OR si.name_search ILIKE '%%' || %(q)s || '%%'
+                    (query.tsq IS NOT NULL AND si.name_search_tsv @@ query.tsq)
+                    OR (%(q_like)s IS NOT NULL AND si.name_search ILIKE %(q_like)s)
+                    OR (%(q_like_raw)s IS NOT NULL AND si.name_raw ILIKE %(q_like_raw)s)
                   )
                 ORDER BY {order_by}
                 LIMIT %(limit)s;
