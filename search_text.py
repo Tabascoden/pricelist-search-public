@@ -125,3 +125,16 @@ def generate_supplier_name_search(name_raw: Optional[str], unit_raw: Optional[st
         return None
     combined = f"{name_raw or ''} {unit_raw or ''}".strip()
     return _generate(combined, min_words=1)
+
+
+def generate_pinned_search_name(text: Optional[str]) -> Optional[str]:
+    base = normalize_base(text)
+    if not base:
+        return None
+    stripped = strip_packaging(base)
+    tokens = tokenize(stripped)
+    tokens = apply_synonyms(tokens)
+    tokens = drop_noise(tokens)
+    if not tokens:
+        return None
+    return " ".join(tokens[:20])
