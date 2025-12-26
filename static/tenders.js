@@ -644,8 +644,8 @@
 
         const searchName = normalizeName(it.search_name);
         const matchName = normalizeName(m?.name_raw);
-        const canStar = Boolean(it.search_pinned && searchName && matchName);
-        let starActive = canStar && matchName.includes(searchName);
+        const canStar = Boolean(it.search_pinned);
+        let starActive = canStar && searchName && matchName && matchName.includes(searchName);
         if (starActive && rowStarred) {
           starActive = false;
         } else if (starActive) {
