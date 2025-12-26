@@ -38,13 +38,13 @@ def normalize_name(name_raw: str) -> str:
     return text.strip()
 
 
-def detect_category(name_raw: str) -> Optional[str]:
-    if not name_raw:
+def detect_category(name_raw: str, unit_raw: Optional[str] = None) -> Optional[str]:
+    if not name_raw and not unit_raw:
         return None
-    lowered = str(name_raw).lower()
+    lowered = f"{name_raw or ''} {unit_raw or ''}".lower()
     if re.search(r"консерв|марин|солен|вялен|в рассоле|в собственном соку", lowered):
         return "canned"
-    if re.search(r"замороз|frozen", lowered):
+    if re.search(r"с/м|с\s*/\s*м|свежеморож|шок.*замороз|заморож|замороз|мороз|frozen", lowered):
         return "frozen"
     # базовый дефолт
     return "fresh"
@@ -634,7 +634,7 @@ def import_price_file(
                 name_norm = normalize_name(name_raw)
                 name_search = generate_supplier_name_search(name_raw, unit_raw) or name_norm
                 base_unit, base_qty, price_per_unit = compute_unit_metrics(name_raw, unit_raw, price_val)
-                category_code = detect_category(name_raw)
+                category_code = detect_category(name_raw, unit_raw)
                 category_id = category_map.get(category_code) if category_code else None
 
                 return (

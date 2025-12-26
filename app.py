@@ -491,16 +491,36 @@ def create_app() -> Flask:
         q_user = normalize_base(q_input) if q_input else ""
         name_input = item.get("name_input") or ""
         search_name = item.get("search_name") or ""
-        q_text_full = q_user or normalize_base(name_input) or ""
-        q_text_core = q_user or normalize_base(search_name or name_input) or ""
+        name_norm = normalize_base(name_input) or ""
+        search_norm = normalize_base(search_name) or ""
+        pinned = bool(search_norm) and (search_norm != name_norm)
+        if q_user:
+            q_text_full = q_user
+            q_text_core = q_user
+        elif pinned:
+            q_text_full = search_norm
+            q_text_core = search_norm
+        else:
+            q_text_full = name_norm
+            q_text_core = search_norm or name_norm
         q_filter = q_user or None
         q_like = f"%{q_filter}%" if q_filter else None
+        prefer_fresh = 0
+        prefer_frozen = 0
+        prefer_text = f"{name_input} {q_input or ''}".strip().lower()
+        if prefer_text:
+            if re.search(r"(свеж|охл|охлажд|fresh)", prefer_text):
+                prefer_fresh = 1
+            if re.search(r"(с/м|с\s*/\s*м|замор|заморож|frozen|мороз|шок.*замор)", prefer_text):
+                prefer_frozen = 1
         want_base_unit, want_base_qty = _extract_unit_hint(name_input, item.get("unit_input"))
         return {
             "q_text_full": q_text_full,
             "q_text_core": q_text_core,
             "q_filter": q_filter,
             "q_like": q_like,
+            "prefer_fresh": prefer_fresh,
+            "prefer_frozen": prefer_frozen,
             "want_base_unit": want_base_unit,
             "want_base_qty": want_base_qty,
         }
@@ -530,6 +550,7 @@ def create_app() -> Flask:
                 si.id AS supplier_item_id,
                 si.supplier_id,
                 si.name_raw,
+                si.name_search,
                 si.unit,
                 si.price,
                 si.base_unit,
@@ -554,6 +575,7 @@ def create_app() -> Flask:
                 si.id AS supplier_item_id,
                 si.supplier_id,
                 si.name_raw,
+                si.name_search,
                 si.unit,
                 si.price,
                 si.base_unit,
@@ -587,7 +609,23 @@ def create_app() -> Flask:
                     AND combined.base_unit = query.want_base_unit
                     AND combined.base_qty BETWEEN query.want_base_qty * 0.9 AND query.want_base_qty * 1.1
                   THEN 1 ELSE 0
-                END AS unit_match
+                END AS unit_match,
+                CASE
+                  WHEN combined.name_raw ~* '(с/м|с\\s*/\\s*м|замор|заморож|frozen|мороз)'
+                    OR combined.name_search ~* '(с/м|с\\s*/\\s*м|замор|заморож|frozen|мороз)'
+                  THEN 1 ELSE 0
+                END AS is_frozen,
+                CASE
+                  WHEN query.prefer_fresh = 1 AND (
+                    combined.name_raw ~* '(с/м|с\\s*/\\s*м|замор|заморож|frozen|мороз)'
+                    OR combined.name_search ~* '(с/м|с\\s*/\\s*м|замор|заморож|frozen|мороз)'
+                  ) THEN 0
+                  WHEN query.prefer_frozen = 1 AND NOT (
+                    combined.name_raw ~* '(с/м|с\\s*/\\s*м|замор|заморож|frozen|мороз)'
+                    OR combined.name_search ~* '(с/м|с\\s*/\\s*м|замор|заморож|frozen|мороз)'
+                  ) THEN 0
+                  ELSE 1
+                END AS freshness_match
               FROM combined, query
             ),
             filtered AS (
@@ -610,7 +648,8 @@ def create_app() -> Flask:
             )
             SELECT *
             FROM filtered
-            ORDER BY unit_match DESC,
+            ORDER BY freshness_match DESC,
+                     unit_match DESC,
                      pass_score DESC,
                      match_quality DESC,
                      total_cost ASC NULLS LAST,
@@ -1014,6 +1053,9 @@ def create_app() -> Flask:
         updates = []
         values: List[Any] = []
         search_name_set = False
+        name_input = None
+        search_raw_value = None
+        search_name_requested = False
 
         if "name_input" in data:
             name_input = str(data.get("name_input") or "").strip()
@@ -1045,18 +1087,31 @@ def create_app() -> Flask:
             values.append(unit_input)
 
         if "search_name" in data and not search_name_set:
-            search_raw = data.get("search_name")
-            search_name = normalize_base(str(search_raw or "")) or None
-            updates.append("search_name=%s")
-            values.append(search_name)
+            search_raw_value = data.get("search_name")
+            search_name_requested = True
 
-        if not updates:
+        if not updates and not search_name_requested:
             return jsonify({"error": "no fields to update"}), 400
 
         try:
             with db_connect() as conn:
                 ensure_schema_compare(conn)
                 with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                    if search_name_requested and not search_name_set:
+                        if name_input is None:
+                            cur.execute(
+                                "SELECT name_input FROM tender_items WHERE id=%s;",
+                                (item_id,),
+                            )
+                            row_name = cur.fetchone()
+                            name_input = row_name["name_input"] if row_name else ""
+                        if search_raw_value is None or str(search_raw_value).strip() == "":
+                            search_name = normalize_base(generate_search_name(name_input) or "") or None
+                        else:
+                            search_name = normalize_base(generate_search_name(str(search_raw_value)) or "") or None
+                        updates.append("search_name=%s")
+                        values.append(search_name)
+
                     cur.execute(
                         f"""
                         UPDATE tender_items
@@ -1071,6 +1126,57 @@ def create_app() -> Flask:
                         return jsonify({"error": "tender item not found"}), 404
                 conn.commit()
 
+            return jsonify({"item": dict(row)})
+        except Exception as e:
+            return jsonify({"error": "internal error", "details": str(e)}), 500
+
+    @app.route("/api/tenders/items/<int:item_id>/star", methods=["POST"])
+    def api_tenders_items_star(item_id: int):
+        data = request.get_json(silent=True) or {}
+        supplier_item_id = data.get("supplier_item_id")
+        if supplier_item_id is None:
+            return jsonify({"error": "supplier_item_id is required"}), 400
+        try:
+            supplier_item_id = int(supplier_item_id)
+        except Exception:
+            return jsonify({"error": "invalid supplier_item_id"}), 400
+        try:
+            with db_connect() as conn:
+                ensure_schema_compare(conn)
+                with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                    cur.execute(
+                        "SELECT id, name_input, search_name FROM tender_items WHERE id=%s;",
+                        (item_id,),
+                    )
+                    item = cur.fetchone()
+                    if not item:
+                        return jsonify({"error": "tender item not found"}), 404
+                    cur.execute(
+                        "SELECT name_raw FROM supplier_items WHERE id=%s;",
+                        (supplier_item_id,),
+                    )
+                    supplier_item = cur.fetchone()
+                    if not supplier_item:
+                        return jsonify({"error": "supplier item not found"}), 404
+
+                    default_search = normalize_base(generate_search_name(item["name_input"]) or "") or None
+                    selected_search = normalize_base(generate_search_name(supplier_item["name_raw"]) or "") or None
+                    if item.get("search_name") and item["search_name"] == selected_search:
+                        next_search = default_search
+                    else:
+                        next_search = selected_search
+
+                    cur.execute(
+                        """
+                        UPDATE tender_items
+                        SET search_name=%s
+                        WHERE id=%s
+                        RETURNING id, project_id, row_no, name_input, search_name, qty, unit_input;
+                        """,
+                        (next_search, item_id),
+                    )
+                    row = cur.fetchone()
+                conn.commit()
             return jsonify({"item": dict(row)})
         except Exception as e:
             return jsonify({"error": "internal error", "details": str(e)}), 500
@@ -1194,6 +1300,8 @@ def create_app() -> Flask:
                     q_text_cores = []
                     q_filters = []
                     q_likes = []
+                    prefer_freshes = []
+                    prefer_frozens = []
                     category_ids = []
                     qtys = []
                     want_base_units = []
@@ -1205,6 +1313,8 @@ def create_app() -> Flask:
                         q_text_cores.append(info["q_text_core"])
                         q_filters.append(info["q_filter"])
                         q_likes.append(info["q_like"])
+                        prefer_freshes.append(info["prefer_fresh"])
+                        prefer_frozens.append(info["prefer_frozen"])
                         category_ids.append(item.get("category_id"))
                         qtys.append(item.get("qty"))
                         want_base_units.append(info["want_base_unit"])
@@ -1217,6 +1327,8 @@ def create_app() -> Flask:
                           ti.q_text_core AS q_text_core,
                           ti.q_filter AS q_filter,
                           ti.q_like AS q_like,
+                          ti.prefer_fresh AS prefer_fresh,
+                          ti.prefer_frozen AS prefer_frozen,
                           ti.category_id AS category_id,
                           ti.want_base_unit AS want_base_unit,
                           ti.want_base_qty AS want_base_qty,
@@ -1238,6 +1350,8 @@ def create_app() -> Flask:
                             %(q_text_cores)s::text[],
                             %(q_filters)s::text[],
                             %(q_likes)s::text[],
+                            %(prefer_freshes)s::int[],
+                            %(prefer_frozens)s::int[],
                             %(category_ids)s::int[],
                             %(qtys)s::numeric[],
                             %(want_base_units)s::text[],
@@ -1248,6 +1362,8 @@ def create_app() -> Flask:
                             q_text_core,
                             q_filter,
                             q_like,
+                            prefer_fresh,
+                            prefer_frozen,
                             category_id,
                             qty,
                             want_base_unit,
@@ -1283,6 +1399,8 @@ def create_app() -> Flask:
                             "q_text_cores": q_text_cores,
                             "q_filters": q_filters,
                             "q_likes": q_likes,
+                            "prefer_freshes": prefer_freshes,
+                            "prefer_frozens": prefer_frozens,
                             "category_ids": category_ids,
                             "qtys": qtys,
                             "want_base_units": want_base_units,
@@ -1608,6 +1726,8 @@ def create_app() -> Flask:
                           %(q_text_core)s::text AS q_text_core,
                           %(q_filter)s::text AS q_filter,
                           %(q_like)s::text AS q_like,
+                          %(prefer_fresh)s::int AS prefer_fresh,
+                          %(prefer_frozen)s::int AS prefer_frozen,
                           %(category_id)s::int AS category_id,
                           %(want_base_unit)s::text AS want_base_unit,
                           %(want_base_qty)s::numeric AS want_base_qty,
@@ -1625,6 +1745,8 @@ def create_app() -> Flask:
                             "q_text_core": query_info["q_text_core"],
                             "q_filter": query_info["q_filter"],
                             "q_like": query_info["q_like"],
+                            "prefer_fresh": query_info["prefer_fresh"],
+                            "prefer_frozen": query_info["prefer_frozen"],
                             "want_base_unit": query_info["want_base_unit"],
                             "want_base_qty": query_info["want_base_qty"],
                             "tender_qty": item.get("qty"),

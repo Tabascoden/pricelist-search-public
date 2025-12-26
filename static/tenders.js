@@ -643,7 +643,7 @@
 
         const searchName = normalizeName(it.search_name);
         const matchName = normalizeName(m?.name_raw);
-        const starActive = !!searchName && !!matchName && searchName === matchName;
+        const starActive = !!searchName && !!matchName && matchName.includes(searchName);
         const cartClass = picked ? "iconBtn cart-picked" : "iconBtn";
         const starClass = starActive ? "iconBtn star-picked" : "iconBtn";
         return `
@@ -726,18 +726,11 @@
       btn.onclick = async () => {
         const itemId = Number(btn.getAttribute("data-item-id"));
         const supplierItemId = Number(btn.getAttribute("data-supplier-item-id"));
-        const item = state.project?.items?.find(x => Number(x.id) === Number(itemId));
-        const nameFromCell = (btn.getAttribute("data-name-raw") || "").trim();
-        const offer = item?.offers?.find(o => Number(o.supplier_item_id) === Number(supplierItemId));
-        const nameRaw = (nameFromCell || offer?.name_raw || "").trim();
-        if (!nameRaw) {
-          alert("Не удалось определить название товара.");
-          return;
-        }
-        const currentSearch = normalizeName(item?.search_name);
-        const nextSearch = normalizeName(nameRaw);
-        const searchName = currentSearch && currentSearch === nextSearch ? null : nameRaw;
-        await updateTenderItem(itemId, { search_name: searchName });
+        await apiJson(`/api/tenders/items/${itemId}/star`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ supplier_item_id: supplierItemId }),
+        });
         await reloadProjectHard();
       };
     });
