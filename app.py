@@ -86,6 +86,10 @@ def create_app() -> Flask:
         )
 
     def _json_safe(v):
+        if isinstance(v, str):
+            if v.strip().lower() == "nan":
+                return None
+            return v
         if isinstance(v, Decimal):
             if not v.is_finite():
                 return None
@@ -474,10 +478,18 @@ def create_app() -> Flask:
             else:
                 if pd.isna(value):
                     return None
-                try:
-                    qty_val = float(value)
-                except Exception:
-                    return None
+                if isinstance(value, Decimal):
+                    if not value.is_finite():
+                        return None
+                    try:
+                        qty_val = float(value)
+                    except Exception:
+                        return None
+                else:
+                    try:
+                        qty_val = float(value)
+                    except Exception:
+                        return None
             if not math.isfinite(qty_val):
                 return None
             return qty_val
@@ -1084,6 +1096,7 @@ def create_app() -> Flask:
                     conn.commit()
                     with db_connect() as conn2:
                         proj = _load_project(conn2, pid)
+                    proj = _json_safe(proj)
                     return jsonify({"project": proj})
 
                 with conn.cursor() as cur:
@@ -1157,6 +1170,8 @@ def create_app() -> Flask:
                 qty_val = float(str(qty_raw).replace(",", "."))
             except Exception:
                 return jsonify({"error": "qty must be numeric"}), 400
+            if not math.isfinite(qty_val):
+                return jsonify({"error": "qty must be finite"}), 400
 
         unit_input = str(data.get("unit_input") or "").strip() or None
 

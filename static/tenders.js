@@ -77,10 +77,14 @@
       parsed = false;
     }
     if (!r.ok) {
-      const msg = (j && (j.error || j.details)) ? `${j.error || "error"}: ${j.details || ""}` : `HTTP ${r.status}`;
+      const msg = (parsed && j && (j.error || j.details))
+        ? `${j.error || "error"}: ${j.details || ""}`
+        : `HTTP ${r.status}`;
       const e = new Error(msg);
       e.status = r.status;
-      e.payload = j;
+      if (parsed) {
+        e.payload = j;
+      }
       throw e;
     }
     if (!parsed) {
@@ -167,7 +171,10 @@
 
   async function loadProject(projectId) {
     const j = await apiJson(`/api/tenders/${projectId}`);
-    state.project = j.project || null;
+    if (!j || !j.project) {
+      throw new Error("Bad API response: missing project");
+    }
+    state.project = j.project;
   }
 
   async function loadSelectedSuppliers(projectId) {
