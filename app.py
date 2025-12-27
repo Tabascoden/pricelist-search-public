@@ -18,7 +18,7 @@ from uuid import uuid4
 
 import psycopg2
 import psycopg2.extras
-from flask import Flask, jsonify, render_template, request, send_file
+from flask import Flask, jsonify, render_template, request, send_file, send_from_directory
 from werkzeug.utils import secure_filename
 
 import import_price
@@ -328,7 +328,11 @@ def create_app() -> Flask:
 
     @app.route("/favicon.ico", methods=["GET"])
     def favicon():
-        return ("", 204)
+        return send_from_directory(
+            os.path.join(app.root_path, "static"),
+            "favicon.svg",
+            mimetype="image/svg+xml",
+        )
 
     # ---------------- Health ----------------
     @app.route("/health", methods=["GET"])
