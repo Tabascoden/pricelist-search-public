@@ -494,6 +494,23 @@ def create_app() -> Flask:
         base_qty = (qty_val * multiplier).quantize(Decimal("0.000001"))
         return base_unit, base_qty
 
+    def _tsquery_sql(expr_sql: str) -> str:
+        """
+        Safe tsquery builder for arbitrary user/catalog text.
+        websearch_to_tsquery may throw on quotes/operators/%/* etc.
+        We sanitize in SQL and use plainto_tsquery (no operators).
+        """
+        cleaned = (
+            f"btrim(regexp_replace(coalesce({expr_sql}, ''), "
+            "'[^0-9A-Za-zА-Яа-яЁё\\s]+', ' ', 'g'))"
+        )
+        return (
+            "CASE WHEN "
+            f"nullif({cleaned}, '') IS NULL "
+            "THEN NULL "
+            f"ELSE plainto_tsquery('russian', {cleaned}) END"
+        )
+
     def _build_tender_query_info(item: Dict[str, Any], q_input: Optional[str] = None) -> Dict[str, Any]:
         q_user = normalize_base(q_input) if q_input else ""
         name_input = item.get("name_input") or ""
@@ -514,7 +531,10 @@ def create_app() -> Flask:
             q_text_core = core or search_norm
         else:
             q_text_full = default_search or name_norm
-            q_text_core = default_search or search_norm or name_norm
+            core = normalize_base(generate_search_name(name_input) or "")
+            if not core:
+                core = normalize_base(re.sub(r"[^0-9A-Za-zА-Яа-я\s]+", " ", name_norm))
+            q_text_core = core
         q_filter = q_user or None
         q_like = f"%{q_filter}%" if q_filter else None
         prefer_fresh = 0
@@ -1411,7 +1431,7 @@ def create_app() -> Flask:
                         is_pinneds.append(info["is_pinned"])
 
                     candidate_sql = _tender_candidates_sql(
-                        """
+                        f"""
                         SELECT
                           ti.tender_item_id AS query_item_id,
                           ti.q_text_full AS q_text_full,
@@ -1426,7 +1446,7 @@ def create_app() -> Flask:
                           ti.qty AS tender_qty,
                           sup.supplier_id AS supplier_id,
                           ti.is_pinned AS is_pinned,
-                          websearch_to_tsquery('russian', ti.q_text_core) AS tsq
+                          {_tsquery_sql("ti.q_text_core")} AS tsq
                         """
                     )
 
@@ -1475,7 +1495,8 @@ def create_app() -> Flask:
                           si.base_qty,
                           si.price_per_unit,
                           si.rank AS rank,
-                          si.score AS score,
+                          coalesce(si.score_adj, si.score) AS score,
+                          si.score_adj AS score_adj,
                           si.mode AS mode,
                           si.unit_match AS unit_match
                         FROM items ti
@@ -1530,6 +1551,7 @@ def create_app() -> Flask:
                     "base_qty": _json_safe(row["base_qty"]),
                     "price_per_unit": _json_safe(row["price_per_unit"]),
                     "score": _json_safe(row["score"]),
+                    "score_adj": _json_safe(row.get("score_adj")),
                     "rank": _json_safe(row["rank"]),
                     "mode": row.get("mode"),
                     "unit_match": row.get("unit_match"),
@@ -1821,7 +1843,7 @@ def create_app() -> Flask:
                     if not q_text_full.strip():
                         return jsonify({"matches": []})
                     candidate_sql = _tender_candidates_sql(
-                        """
+                        f"""
                         SELECT
                           %(query_item_id)s::int AS query_item_id,
                           %(q_text_full)s::text AS q_text_full,
@@ -1836,7 +1858,7 @@ def create_app() -> Flask:
                           %(tender_qty)s::numeric AS tender_qty,
                           %(supplier_id)s::int AS supplier_id,
                           %(is_pinned)s::bool AS is_pinned,
-                          websearch_to_tsquery('russian', %(q_text_core)s::text) AS tsq
+                          {_tsquery_sql("%(q_text_core)s::text")} AS tsq
                         """
                     )
                     cur.execute(
@@ -2619,7 +2641,7 @@ def create_app() -> Flask:
 
             sql = f"""
                 WITH query AS (
-                  SELECT websearch_to_tsquery('russian', %(q)s) AS tsq
+                  SELECT {_tsquery_sql("%(q)s::text")} AS tsq
                 )
                 SELECT
                   si.id,
