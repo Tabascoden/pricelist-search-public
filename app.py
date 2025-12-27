@@ -642,7 +642,7 @@ def create_app() -> Flask:
                 coalesce(array_length(regexp_split_to_array(nullif(trim(combined.name_search), ''), '\\s+'), 1), 0) AS si_words,
                 CASE
                   WHEN (query.q_text_core IS NOT NULL AND length(trim(query.q_text_core)) > 0)
-                   AND combined.name_search ILIKE query.q_text_core || '%'
+                   AND left(combined.name_search, length(query.q_text_core)) = query.q_text_core
                   THEN TRUE ELSE FALSE
                 END AS is_prefix,
                 CASE
