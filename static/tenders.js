@@ -167,7 +167,10 @@
 
   async function loadProject(projectId) {
     const j = await apiJson(`/api/tenders/${projectId}`);
-    state.project = j.project || null;
+    if (!j || !j.project) {
+      throw new Error("Bad API response: missing project");
+    }
+    state.project = j.project;
   }
 
   async function loadSelectedSuppliers(projectId) {
