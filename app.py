@@ -23,7 +23,7 @@ from werkzeug.utils import secure_filename
 
 import import_price
 import pandas as pd
-from search_text import generate_pinned_search_name, generate_search_name, normalize_base
+from search_text import generate_search_name, normalize_base
 
 try:
     from openpyxl import Workbook
@@ -546,6 +546,11 @@ def create_app() -> Flask:
             if re.search(r"(с/м|с\s*/\s*м|замор|заморож|frozen|мороз|шок.*замор)", prefer_text):
                 prefer_frozen = 1
         want_base_unit, want_base_qty = _extract_unit_hint(name_input, item.get("unit_input"))
+        if want_base_qty is None and pinned:
+            unit_hint_input = search_name or name_input
+            u2, q2 = _extract_unit_hint(unit_hint_input, item.get("unit_input"))
+            if q2 is not None:
+                want_base_unit, want_base_qty = u2, q2
         return {
             "q_text_full": q_text_full,
             "q_text_core": q_text_core,
@@ -642,7 +647,7 @@ def create_app() -> Flask:
                 coalesce(array_length(regexp_split_to_array(nullif(trim(combined.name_search), ''), '\\s+'), 1), 0) AS si_words,
                 CASE
                   WHEN (query.q_text_core IS NOT NULL AND length(trim(query.q_text_core)) > 0)
-                   AND left(combined.name_search, length(query.q_text_core)) = query.q_text_core
+                   AND left(coalesce(combined.name_search, ''), length(query.q_text_core)) = query.q_text_core
                   THEN TRUE ELSE FALSE
                 END AS is_prefix,
                 CASE
@@ -652,6 +657,11 @@ def create_app() -> Flask:
                     AND combined.base_qty BETWEEN query.want_base_qty * 0.9 AND query.want_base_qty * 1.1
                   THEN 1 ELSE 0
                 END AS unit_match,
+                CASE
+                  WHEN query.star_supplier_item_id IS NOT NULL
+                   AND combined.supplier_item_id = query.star_supplier_item_id
+                  THEN 1 ELSE 0
+                END AS is_star_exact,
                 CASE
                   WHEN combined.name_raw ~* '(с/м|с\\s*/\\s*м|замор|заморож|frozen|мороз)'
                     OR combined.name_search ~* '(с/м|с\\s*/\\s*м|замор|заморож|frozen|мороз)'
@@ -736,7 +746,8 @@ def create_app() -> Flask:
             )
             SELECT *
             FROM ordered
-            ORDER BY freshness_match DESC,
+            ORDER BY is_star_exact DESC,
+                     freshness_match DESC,
                      unit_match DESC,
                      pass_score DESC,
                      match_quality DESC,
@@ -1255,8 +1266,13 @@ def create_app() -> Flask:
                         return jsonify({"error": "supplier item not found"}), 404
 
                     default_search = normalize_base(generate_search_name(item["name_input"]) or "")
-                    supplier_text = f"{supplier_item.get('name_raw') or ''} {supplier_item.get('unit') or ''}".strip()
-                    target_search = normalize_base(generate_pinned_search_name(supplier_text) or "")
+                    name_raw = supplier_item.get("name_raw") or ""
+                    unit_raw = supplier_item.get("unit") or ""
+                    if re.search(r"\d+(?:[\.,]\d+)?\s*(кг|г|гр|л|мл)\b", name_raw, re.IGNORECASE):
+                        supplier_text = name_raw.strip()
+                    else:
+                        supplier_text = f"{name_raw} {unit_raw}".strip()
+                    target_search = normalize_base(supplier_text)
                     if item.get("star_supplier_item_id") == supplier_item_id:
                         next_star_id = None
                         next_search = default_search
@@ -1415,6 +1431,7 @@ def create_app() -> Flask:
                     want_base_units = []
                     want_base_qtys = []
                     is_pinneds = []
+                    star_supplier_item_ids = []
                     for item in items:
                         info = _build_tender_query_info(item)
                         tender_item_ids.append(item["id"])
@@ -1429,6 +1446,7 @@ def create_app() -> Flask:
                         want_base_units.append(info["want_base_unit"])
                         want_base_qtys.append(info["want_base_qty"])
                         is_pinneds.append(info["is_pinned"])
+                        star_supplier_item_ids.append(item.get("star_supplier_item_id"))
 
                     candidate_sql = _tender_candidates_sql(
                         f"""
@@ -1446,6 +1464,7 @@ def create_app() -> Flask:
                           ti.qty AS tender_qty,
                           sup.supplier_id AS supplier_id,
                           ti.is_pinned AS is_pinned,
+                          ti.star_supplier_item_id AS star_supplier_item_id,
                           {_tsquery_sql("ti.q_text_core")} AS tsq
                         """
                     )
@@ -1468,7 +1487,8 @@ def create_app() -> Flask:
                             %(qtys)s::numeric[],
                             %(want_base_units)s::text[],
                             %(want_base_qtys)s::numeric[],
-                            %(is_pinneds)s::bool[]
+                            %(is_pinneds)s::bool[],
+                            %(star_supplier_item_ids)s::int[]
                           ) AS v(
                             tender_item_id,
                             q_text_full,
@@ -1481,7 +1501,8 @@ def create_app() -> Flask:
                             qty,
                             want_base_unit,
                             want_base_qty,
-                            is_pinned
+                            is_pinned,
+                            star_supplier_item_id
                           )
                         )
                         SELECT
@@ -1521,6 +1542,7 @@ def create_app() -> Flask:
                             "want_base_units": want_base_units,
                             "want_base_qtys": want_base_qtys,
                             "is_pinneds": is_pinneds,
+                            "star_supplier_item_ids": star_supplier_item_ids,
                             "min_score": min_score,
                             "min_rank": min_rank,
                             "fts_candidates": fts_candidates,
@@ -1858,6 +1880,7 @@ def create_app() -> Flask:
                           %(tender_qty)s::numeric AS tender_qty,
                           %(supplier_id)s::int AS supplier_id,
                           %(is_pinned)s::bool AS is_pinned,
+                          %(star_supplier_item_id)s::int AS star_supplier_item_id,
                           {_tsquery_sql("%(q_text_core)s::text")} AS tsq
                         """
                     )
@@ -1888,6 +1911,7 @@ def create_app() -> Flask:
                             "tender_extra_word_penalty_multi": TENDER_EXTRA_WORD_PENALTY_MULTI,
                             "tender_extra_word_nonprefix_penalty": TENDER_EXTRA_WORD_NONPREFIX_PENALTY,
                             "is_pinned": query_info["is_pinned"],
+                            "star_supplier_item_id": item.get("star_supplier_item_id"),
                         },
                     )
                     matches = [dict(r) for r in cur.fetchall()]
