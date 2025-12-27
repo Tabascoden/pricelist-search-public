@@ -612,68 +612,19 @@ def create_app() -> Flask:
               SELECT * FROM trgm
               WHERE NOT EXISTS (SELECT 1 FROM fts)
             ),
-            ranked AS (
+            ranked_base AS (
               SELECT
                 combined.*,
                 query.query_item_id AS query_item_id,
                 query.is_pinned AS is_pinned,
-                greatest(
-                  0.0,
-                  combined.score
-                  + CASE
-                      WHEN query.q_text_core IS NOT NULL AND length(query.q_text_core) > 0
-                        AND combined.name_search ILIKE query.q_text_core || '%'
-                      THEN %(tender_prefix_bonus)s
-                      ELSE 0.0
-                    END
-                  - greatest(
-                      coalesce(
-                        array_length(regexp_split_to_array(nullif(trim(combined.name_search), ''), '\\s+'), 1),
-                        0
-                      )
-                      - coalesce(
-                          array_length(regexp_split_to_array(nullif(trim(query.q_text_core), ''), '\\s+'), 1),
-                          0
-                        ),
-                      0
-                    ) * CASE
-                          WHEN coalesce(
-                            array_length(regexp_split_to_array(nullif(trim(query.q_text_core), ''), '\\s+'), 1),
-                            0
-                          ) <= 1
-                          THEN %(tender_extra_word_penalty_one)s
-                          ELSE %(tender_extra_word_penalty_multi)s
-                        END
-                  - CASE
-                      WHEN coalesce(
-                            array_length(regexp_split_to_array(nullif(trim(query.q_text_core), ''), '\\s+'), 1),
-                            0
-                          ) <= 1
-                       AND greatest(
-                            coalesce(
-                              array_length(
-                                regexp_split_to_array(nullif(trim(combined.name_search), ''), '\\s+'),
-                                1
-                              ),
-                              0
-                            )
-                            - coalesce(
-                                array_length(
-                                  regexp_split_to_array(nullif(trim(query.q_text_core), ''), '\\s+'),
-                                  1
-                                ),
-                                0
-                              ),
-                            0
-                          ) >= 2
-                       AND NOT (
-                         query.q_text_core IS NOT NULL AND length(query.q_text_core) > 0
-                         AND combined.name_search ILIKE query.q_text_core || '%'
-                       )
-                      THEN %(tender_extra_word_nonprefix_penalty)s
-                      ELSE 0.0
-                    END
-                ) AS score_adj,
+                (query.q_text_core IS NOT NULL AND length(trim(query.q_text_core)) > 0) AS core_nonempty,
+                coalesce(array_length(regexp_split_to_array(nullif(trim(query.q_text_core), ''), '\\s+'), 1), 0) AS q_words,
+                coalesce(array_length(regexp_split_to_array(nullif(trim(combined.name_search), ''), '\\s+'), 1), 0) AS si_words,
+                CASE
+                  WHEN (query.q_text_core IS NOT NULL AND length(trim(query.q_text_core)) > 0)
+                   AND combined.name_search ILIKE query.q_text_core || '%'
+                  THEN TRUE ELSE FALSE
+                END AS is_prefix,
                 CASE
                   WHEN query.want_base_unit IS NOT NULL
                     AND query.want_base_qty IS NOT NULL
@@ -698,6 +649,29 @@ def create_app() -> Flask:
                   ELSE 1
                 END AS freshness_match
               FROM combined, query
+            ),
+            ranked AS (
+              SELECT
+                rb.*,
+                greatest(
+                  0.0,
+                  rb.score
+                  + CASE WHEN rb.is_prefix THEN %(tender_prefix_bonus)s ELSE 0.0 END
+                  - greatest(rb.si_words - rb.q_words, 0)
+                    * CASE
+                        WHEN rb.q_words <= 1 THEN %(tender_extra_word_penalty_one)s
+                        ELSE %(tender_extra_word_penalty_multi)s
+                      END
+                  - CASE
+                      WHEN rb.core_nonempty
+                       AND rb.q_words <= 1
+                       AND greatest(rb.si_words - rb.q_words, 0) >= 2
+                       AND NOT rb.is_prefix
+                      THEN %(tender_extra_word_nonprefix_penalty)s
+                      ELSE 0.0
+                    END
+                ) AS score_adj
+              FROM ranked_base rb
             ),
             filtered AS (
               SELECT
