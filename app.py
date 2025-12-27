@@ -1424,6 +1424,7 @@ def create_app() -> Flask:
     @app.route("/api/tenders/<int:project_id>/matrix", methods=["GET"])
     def api_tenders_matrix(project_id: int):
         supplier_ids_raw = (request.args.get("supplier_ids") or "").strip()
+        split_raw = (request.args.get("split") or "").strip().lower()
         min_score_raw = request.args.get("min_score")
         min_rank_raw = request.args.get("min_rank")
         fts_candidates_raw = request.args.get("fts_candidates")
@@ -1453,9 +1454,13 @@ def create_app() -> Flask:
         if not supplier_ids:
             return jsonify({"matrix": {}})
         try:
+            # по умолчанию дробим при 3+ поставщиках, либо если явно split=1/true
+            split = split_raw in ("1", "true", "yes", "on") or (len(supplier_ids) > 2)
+            matrix_timeout_ms = int(os.getenv("TENDER_MATRIX_TIMEOUT_MS", "60000"))
             with db_connect() as conn:
                 ensure_schema_compare(conn)
                 with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                    cur.execute("SET LOCAL statement_timeout = %s;", (matrix_timeout_ms,))
                     cur.execute(
                         """
                         SELECT id, name_input, search_name, qty, unit_input, category_id, star_supplier_item_id
@@ -1575,37 +1580,45 @@ def create_app() -> Flask:
                           {candidate_sql}
                         ) si ON TRUE;
                     """
-                    cur.execute(
-                        sql,
-                        {
-                            "supplier_ids": supplier_ids,
-                            "tender_item_ids": tender_item_ids,
-                            "q_text_fulls": q_text_fulls,
-                            "q_text_cores": q_text_cores,
-                            "q_filters": q_filters,
-                            "q_likes": q_likes,
-                            "prefer_freshes": prefer_freshes,
-                            "prefer_frozens": prefer_frozens,
-                            "category_ids": category_ids,
-                            "qtys": qtys,
-                            "want_base_units": want_base_units,
-                            "want_base_qtys": want_base_qtys,
-                            "is_pinneds": is_pinneds,
-                            "star_supplier_item_ids": star_supplier_item_ids,
-                            "min_score": min_score,
-                            "min_rank": min_rank,
-                            "fts_candidates": fts_candidates,
-                            "trgm_candidates": trgm_candidates,
-                            "tender_text_tie_abs_eps": TENDER_TEXT_TIE_ABS_EPS,
-                            "tender_text_tie_rel_eps": TENDER_TEXT_TIE_REL_EPS,
-                            "tender_prefix_bonus": TENDER_PREFIX_BONUS,
-                            "tender_extra_word_penalty_one": TENDER_EXTRA_WORD_PENALTY_ONE,
-                            "tender_extra_word_penalty_multi": TENDER_EXTRA_WORD_PENALTY_MULTI,
-                            "tender_extra_word_nonprefix_penalty": TENDER_EXTRA_WORD_NONPREFIX_PENALTY,
-                            "limit": 1,
-                        },
-                    )
-                    rows = cur.fetchall()
+                    base_params = {
+                        "tender_item_ids": tender_item_ids,
+                        "q_text_fulls": q_text_fulls,
+                        "q_text_cores": q_text_cores,
+                        "q_filters": q_filters,
+                        "q_likes": q_likes,
+                        "prefer_freshes": prefer_freshes,
+                        "prefer_frozens": prefer_frozens,
+                        "category_ids": category_ids,
+                        "qtys": qtys,
+                        "want_base_units": want_base_units,
+                        "want_base_qtys": want_base_qtys,
+                        "is_pinneds": is_pinneds,
+                        "star_supplier_item_ids": star_supplier_item_ids,
+                        "min_score": min_score,
+                        "min_rank": min_rank,
+                        "fts_candidates": fts_candidates,
+                        "trgm_candidates": trgm_candidates,
+                        "tender_text_tie_abs_eps": TENDER_TEXT_TIE_ABS_EPS,
+                        "tender_text_tie_rel_eps": TENDER_TEXT_TIE_REL_EPS,
+                        "tender_prefix_bonus": TENDER_PREFIX_BONUS,
+                        "tender_extra_word_penalty_one": TENDER_EXTRA_WORD_PENALTY_ONE,
+                        "tender_extra_word_penalty_multi": TENDER_EXTRA_WORD_PENALTY_MULTI,
+                        "tender_extra_word_nonprefix_penalty": TENDER_EXTRA_WORD_NONPREFIX_PENALTY,
+                        "limit": 1,
+                    }
+
+                    rows = []
+                    if split:
+                        for sid in supplier_ids:
+                            params = dict(base_params)
+                            params["supplier_ids"] = [sid]
+                            cur.execute(sql, params)
+                            rows.extend(cur.fetchall())
+                    else:
+                        params = dict(base_params)
+                        params["supplier_ids"] = supplier_ids
+                        cur.execute(sql, params)
+                        rows = cur.fetchall()
             matrix: Dict[str, Dict[str, Dict[str, Any]]] = {}
             for row in rows:
                 if row["supplier_item_id"] is None:

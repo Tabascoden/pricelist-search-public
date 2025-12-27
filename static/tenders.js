@@ -201,7 +201,9 @@
     if (!ids.length) return;
 
     try {
-      const qs = `supplier_ids=${encodeURIComponent(ids.join(","))}&min_score=0`;
+  const qs = `supplier_ids=${encodeURIComponent(ids.join(","))}`
+    + `&min_score=${encodeURIComponent(MIN_SCORE)}`
+    + `&fts_candidates=80&trgm_candidates=80&split=1`;
       const j = await apiJson(`/api/tenders/${projectId}/matrix?${qs}`);
       state.matrix = j.matrix || {};
     } catch (e) {
