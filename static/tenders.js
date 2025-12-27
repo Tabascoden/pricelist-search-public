@@ -67,13 +67,25 @@
 
   async function apiJson(url, opts = {}) {
     const r = await fetch(url, opts);
+    const contentType = r.headers.get("content-type") || "";
     let j = null;
-    try { j = await r.json(); } catch { /* ignore */ }
+    let parsed = false;
+    try {
+      j = await r.json();
+      parsed = true;
+    } catch {
+      parsed = false;
+    }
     if (!r.ok) {
       const msg = (j && (j.error || j.details)) ? `${j.error || "error"}: ${j.details || ""}` : `HTTP ${r.status}`;
       const e = new Error(msg);
       e.status = r.status;
       e.payload = j;
+      throw e;
+    }
+    if (!parsed) {
+      const e = new Error(`API returned non-JSON (status=${r.status}, content-type=${contentType || "unknown"})`);
+      e.status = r.status;
       throw e;
     }
     return j;

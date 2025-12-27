@@ -87,7 +87,19 @@ def create_app() -> Flask:
 
     def _json_safe(v):
         if isinstance(v, Decimal):
-            return float(v)
+            if not v.is_finite():
+                return None
+            try:
+                as_float = float(v)
+            except (OverflowError, ValueError):
+                return None
+            return as_float if math.isfinite(as_float) else None
+        if isinstance(v, float):
+            return v if math.isfinite(v) else None
+        if isinstance(v, dict):
+            return {k: _json_safe(val) for k, val in v.items()}
+        if isinstance(v, (list, tuple, set)):
+            return [_json_safe(val) for val in v]
         return v
 
     def _scalar(row, key=None):
@@ -432,6 +444,44 @@ def create_app() -> Flask:
         idx_unit = pick("ед", "единица", "unit", "ед.")
         idx_cat = pick("категория", "category")
 
+        def _string_or_none(value: Any) -> Optional[str]:
+            if value is None:
+                return None
+            if isinstance(value, str):
+                text = value.strip()
+                if not text or text.lower() == "nan":
+                    return None
+                return text
+            if pd.isna(value):
+                return None
+            text = str(value).strip()
+            if not text or text.lower() == "nan":
+                return None
+            return text
+
+        def _parse_qty(value: Any) -> Optional[float]:
+            if value is None:
+                return None
+            if isinstance(value, str):
+                raw = value.strip()
+                if not raw or raw.lower() == "nan":
+                    return None
+                raw = raw.replace(",", ".")
+                try:
+                    qty_val = float(raw)
+                except Exception:
+                    return None
+            else:
+                if pd.isna(value):
+                    return None
+                try:
+                    qty_val = float(value)
+                except Exception:
+                    return None
+            if not math.isfinite(qty_val):
+                return None
+            return qty_val
+
         with conn.cursor() as cur:
             cur.execute("SELECT COALESCE(MAX(row_no), 0) FROM tender_items WHERE project_id=%s;", (project_id,))
             row_no = _scalar(cur.fetchone()) or 0
@@ -439,21 +489,19 @@ def create_app() -> Flask:
             items_to_insert = []
             for row in df.itertuples(index=False):
                 row_list = list(row)
-                name_val = str(row_list[idx_name]).strip() if idx_name is not None else ""
+                name_val = _string_or_none(row_list[idx_name]) if idx_name is not None else None
                 if not name_val:
                     continue
                 qty_val = None
                 if idx_qty is not None and idx_qty < len(row_list):
-                    try:
-                        qty_val = float(row_list[idx_qty]) if row_list[idx_qty] not in (None, "") else None
-                    except Exception:
-                        qty_val = None
+                    qty_val = _parse_qty(row_list[idx_qty])
                 unit_val = None
                 if idx_unit is not None and idx_unit < len(row_list):
-                    unit_val = str(row_list[idx_unit]).strip() or None
+                    unit_val = _string_or_none(row_list[idx_unit])
                 cat_val = None
                 if idx_cat is not None and idx_cat < len(row_list):
-                    cat_val = normalize_category_value(row_list[idx_cat])
+                    cat_raw = _string_or_none(row_list[idx_cat])
+                    cat_val = normalize_category_value(cat_raw) if cat_raw else None
                 category_id = category_map.get(cat_val) if cat_val else None
                 row_no += 1
                 search_name = normalize_base(generate_search_name(name_val) or "") or None
@@ -1046,6 +1094,7 @@ def create_app() -> Flask:
 
                 with db_connect() as conn2:
                     proj = _load_project(conn2, pid)
+                proj = _json_safe(proj)
                 return jsonify({"project": proj})
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
@@ -1071,6 +1120,7 @@ def create_app() -> Flask:
                 conn.commit()
             with db_connect() as conn2:
                 proj = _load_project(conn2, project_id)
+            proj = _json_safe(proj)
             return jsonify({"project": proj, "inserted": inserted})
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
@@ -1088,12 +1138,7 @@ def create_app() -> Flask:
                 proj = _load_project(conn, project_id)
             if not proj:
                 return jsonify({"error": "not found"}), 404
-            proj["items"] = [
-                {k: _json_safe(v) for k, v in it.items()} if isinstance(it, dict) else it for it in proj.get("items", [])
-            ]
-            for it in proj.get("items", []):
-                if isinstance(it, dict) and "offers" in it:
-                    it["offers"] = [{k: _json_safe(v) for k, v in off.items()} for off in it["offers"]]
+            proj = _json_safe(proj)
             return jsonify({"project": proj})
         except Exception as e:
             return jsonify({"error": "internal error", "details": str(e)}), 500
