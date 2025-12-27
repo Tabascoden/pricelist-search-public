@@ -193,6 +193,10 @@
       const j = await apiJson(`/api/tenders/${projectId}/matrix?${qs}`);
       state.matrix = j.matrix || {};
     } catch (e) {
+      console.error("Failed to load tender matrix", e);
+      if (e && e.status !== 404 && typeof toast === "function") {
+        toast("Ошибка", "Не удалось загрузить матрицу тендера");
+      }
       // если нет эндпойнта — просто оставим пусто (таблица будет без матчей)
       state.matrix = {};
     }
