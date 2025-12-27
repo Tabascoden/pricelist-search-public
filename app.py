@@ -68,6 +68,10 @@ def create_app() -> Flask:
     MIN_SCORE_DEFAULT = float(os.getenv("MIN_SCORE_DEFAULT", "0"))
     TENDER_TEXT_TIE_ABS_EPS = float(os.getenv("TENDER_TEXT_TIE_ABS_EPS", "0.01"))
     TENDER_TEXT_TIE_REL_EPS = float(os.getenv("TENDER_TEXT_TIE_REL_EPS", "0.05"))
+    TENDER_PREFIX_BONUS = float(os.getenv("TENDER_PREFIX_BONUS", "0.08"))
+    TENDER_EXTRA_WORD_PENALTY_ONE = float(os.getenv("TENDER_EXTRA_WORD_PENALTY_ONE", "0.12"))
+    TENDER_EXTRA_WORD_PENALTY_MULTI = float(os.getenv("TENDER_EXTRA_WORD_PENALTY_MULTI", "0.04"))
+    TENDER_EXTRA_WORD_NONPREFIX_PENALTY = float(os.getenv("TENDER_EXTRA_WORD_NONPREFIX_PENALTY", "0.10"))
     TENDER_MATCH_DEBUG = _env_bool("TENDER_MATCH_DEBUG", False)
 
     def db_connect():
@@ -502,10 +506,12 @@ def create_app() -> Flask:
             pinned = True
         if q_user:
             q_text_full = q_user
-            q_text_core = q_user
+            core = normalize_base(generate_search_name(q_user) or "")
+            q_text_core = core or q_user
         elif pinned:
             q_text_full = search_norm
-            q_text_core = search_norm
+            core = normalize_base(generate_search_name(search_norm) or "")
+            q_text_core = core or search_norm
         else:
             q_text_full = default_search or name_norm
             q_text_core = default_search or search_norm or name_norm
@@ -529,6 +535,7 @@ def create_app() -> Flask:
             "prefer_frozen": prefer_frozen,
             "want_base_unit": want_base_unit,
             "want_base_qty": want_base_qty,
+            "is_pinned": pinned,
         }
 
     def _tender_candidates_sql(query_source: str) -> str:
@@ -609,7 +616,64 @@ def create_app() -> Flask:
               SELECT
                 combined.*,
                 query.query_item_id AS query_item_id,
-                CASE WHEN combined.mode='fts' THEN combined.rank ELSE combined.score END AS match_quality,
+                query.is_pinned AS is_pinned,
+                greatest(
+                  0.0,
+                  combined.score
+                  + CASE
+                      WHEN query.q_text_core IS NOT NULL AND length(query.q_text_core) > 0
+                        AND combined.name_search ILIKE query.q_text_core || '%'
+                      THEN %(tender_prefix_bonus)s
+                      ELSE 0.0
+                    END
+                  - greatest(
+                      coalesce(
+                        array_length(regexp_split_to_array(nullif(trim(combined.name_search), ''), '\\s+'), 1),
+                        0
+                      )
+                      - coalesce(
+                          array_length(regexp_split_to_array(nullif(trim(query.q_text_core), ''), '\\s+'), 1),
+                          0
+                        ),
+                      0
+                    ) * CASE
+                          WHEN coalesce(
+                            array_length(regexp_split_to_array(nullif(trim(query.q_text_core), ''), '\\s+'), 1),
+                            0
+                          ) <= 1
+                          THEN %(tender_extra_word_penalty_one)s
+                          ELSE %(tender_extra_word_penalty_multi)s
+                        END
+                  - CASE
+                      WHEN coalesce(
+                            array_length(regexp_split_to_array(nullif(trim(query.q_text_core), ''), '\\s+'), 1),
+                            0
+                          ) <= 1
+                       AND greatest(
+                            coalesce(
+                              array_length(
+                                regexp_split_to_array(nullif(trim(combined.name_search), ''), '\\s+'),
+                                1
+                              ),
+                              0
+                            )
+                            - coalesce(
+                                array_length(
+                                  regexp_split_to_array(nullif(trim(query.q_text_core), ''), '\\s+'),
+                                  1
+                                ),
+                                0
+                              ),
+                            0
+                          ) >= 2
+                       AND NOT (
+                         query.q_text_core IS NOT NULL AND length(query.q_text_core) > 0
+                         AND combined.name_search ILIKE query.q_text_core || '%'
+                       )
+                      THEN %(tender_extra_word_nonprefix_penalty)s
+                      ELSE 0.0
+                    END
+                ) AS score_adj,
                 CASE
                   WHEN query.want_base_unit IS NOT NULL
                     AND query.want_base_qty IS NOT NULL
@@ -638,6 +702,7 @@ def create_app() -> Flask:
             filtered AS (
               SELECT
                 ranked.*,
+                CASE WHEN ranked.mode='fts' THEN ranked.rank + ranked.score_adj ELSE ranked.score_adj END AS match_quality,
                 CASE
                   WHEN query.tender_qty IS NOT NULL AND ranked.price_per_unit IS NOT NULL
                     THEN ranked.price_per_unit * query.tender_qty
@@ -648,10 +713,10 @@ def create_app() -> Flask:
                     THEN CEIL(query.tender_qty / ranked.base_qty) * ranked.price
                   ELSE NULL
                 END AS total_cost,
-                CASE WHEN ranked.score >= %(min_score)s THEN 1 ELSE 0 END AS pass_score
+                CASE WHEN ranked.score_adj >= %(min_score)s THEN 1 ELSE 0 END AS pass_score
               FROM ranked, query
               WHERE
-                (ranked.rank >= %(min_rank)s OR ranked.score >= %(min_score)s)
+                (ranked.rank >= %(min_rank)s OR ranked.score_adj >= %(min_score)s)
             ),
             scored AS (
               SELECT
@@ -666,6 +731,7 @@ def create_app() -> Flask:
                 scored.*,
                 (best_quality - match_quality) AS quality_gap,
                 CASE
+                  WHEN scored.is_pinned IS TRUE THEN FALSE
                   WHEN best_quality IS NULL THEN FALSE
                   WHEN best_quality - match_quality
                     <= greatest(%(tender_text_tie_abs_eps)s, best_quality * %(tender_text_tie_rel_eps)s)
@@ -1354,6 +1420,7 @@ def create_app() -> Flask:
                     qtys = []
                     want_base_units = []
                     want_base_qtys = []
+                    is_pinneds = []
                     for item in items:
                         info = _build_tender_query_info(item)
                         tender_item_ids.append(item["id"])
@@ -1367,6 +1434,7 @@ def create_app() -> Flask:
                         qtys.append(item.get("qty"))
                         want_base_units.append(info["want_base_unit"])
                         want_base_qtys.append(info["want_base_qty"])
+                        is_pinneds.append(info["is_pinned"])
 
                     candidate_sql = _tender_candidates_sql(
                         """
@@ -1383,7 +1451,8 @@ def create_app() -> Flask:
                           ti.want_base_qty AS want_base_qty,
                           ti.qty AS tender_qty,
                           sup.supplier_id AS supplier_id,
-                          websearch_to_tsquery('russian', ti.q_text_full) AS tsq
+                          ti.is_pinned AS is_pinned,
+                          websearch_to_tsquery('russian', ti.q_text_core) AS tsq
                         """
                     )
 
@@ -1404,7 +1473,8 @@ def create_app() -> Flask:
                             %(category_ids)s::int[],
                             %(qtys)s::numeric[],
                             %(want_base_units)s::text[],
-                            %(want_base_qtys)s::numeric[]
+                            %(want_base_qtys)s::numeric[],
+                            %(is_pinneds)s::bool[]
                           ) AS v(
                             tender_item_id,
                             q_text_full,
@@ -1416,7 +1486,8 @@ def create_app() -> Flask:
                             category_id,
                             qty,
                             want_base_unit,
-                            want_base_qty
+                            want_base_qty,
+                            is_pinned
                           )
                         )
                         SELECT
@@ -1454,12 +1525,17 @@ def create_app() -> Flask:
                             "qtys": qtys,
                             "want_base_units": want_base_units,
                             "want_base_qtys": want_base_qtys,
+                            "is_pinneds": is_pinneds,
                             "min_score": min_score,
                             "min_rank": min_rank,
                             "fts_candidates": fts_candidates,
                             "trgm_candidates": trgm_candidates,
                             "tender_text_tie_abs_eps": TENDER_TEXT_TIE_ABS_EPS,
                             "tender_text_tie_rel_eps": TENDER_TEXT_TIE_REL_EPS,
+                            "tender_prefix_bonus": TENDER_PREFIX_BONUS,
+                            "tender_extra_word_penalty_one": TENDER_EXTRA_WORD_PENALTY_ONE,
+                            "tender_extra_word_penalty_multi": TENDER_EXTRA_WORD_PENALTY_MULTI,
+                            "tender_extra_word_nonprefix_penalty": TENDER_EXTRA_WORD_NONPREFIX_PENALTY,
                             "limit": 1,
                         },
                     )
@@ -1785,7 +1861,8 @@ def create_app() -> Flask:
                           %(want_base_qty)s::numeric AS want_base_qty,
                           %(tender_qty)s::numeric AS tender_qty,
                           %(supplier_id)s::int AS supplier_id,
-                          websearch_to_tsquery('russian', %(q_text_full)s::text) AS tsq
+                          %(is_pinned)s::bool AS is_pinned,
+                          websearch_to_tsquery('russian', %(q_text_core)s::text) AS tsq
                         """
                     )
                     cur.execute(
@@ -1810,6 +1887,11 @@ def create_app() -> Flask:
                             "trgm_candidates": trgm_candidates,
                             "tender_text_tie_abs_eps": TENDER_TEXT_TIE_ABS_EPS,
                             "tender_text_tie_rel_eps": TENDER_TEXT_TIE_REL_EPS,
+                            "tender_prefix_bonus": TENDER_PREFIX_BONUS,
+                            "tender_extra_word_penalty_one": TENDER_EXTRA_WORD_PENALTY_ONE,
+                            "tender_extra_word_penalty_multi": TENDER_EXTRA_WORD_PENALTY_MULTI,
+                            "tender_extra_word_nonprefix_penalty": TENDER_EXTRA_WORD_NONPREFIX_PENALTY,
+                            "is_pinned": query_info["is_pinned"],
                         },
                     )
                     matches = [dict(r) for r in cur.fetchall()]
@@ -1820,6 +1902,7 @@ def create_app() -> Flask:
                 "total_cost",
                 "query_item_id",
             }
+            diagnostics_fields.add("score_adj")
             if not TENDER_MATCH_DEBUG:
                 for match in matches:
                     for field in diagnostics_fields:
