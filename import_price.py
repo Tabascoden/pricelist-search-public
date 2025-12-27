@@ -16,6 +16,8 @@ from psycopg2.extras import execute_values
 
 import pandas as pd
 
+from search_text import generate_supplier_name_search
+
 
 NAME_KEYS = ["наименование", "наименованиетовара", "товар", "описание", "позиция", "product", "item", "название"]
 CODE_KEYS = ["код", "кодтовара", "артикул", "art", "sku", "код1с", "штрихкод", "баркод"]
@@ -36,13 +38,13 @@ def normalize_name(name_raw: str) -> str:
     return text.strip()
 
 
-def detect_category(name_raw: str) -> Optional[str]:
-    if not name_raw:
+def detect_category(name_raw: str, unit_raw: Optional[str] = None) -> Optional[str]:
+    if not name_raw and not unit_raw:
         return None
-    lowered = str(name_raw).lower()
+    lowered = f"{name_raw or ''} {unit_raw or ''}".lower()
     if re.search(r"консерв|марин|солен|вялен|в рассоле|в собственном соку", lowered):
         return "canned"
-    if re.search(r"замороз|frozen", lowered):
+    if re.search(r"с/м|с\s*/\s*м|свежеморож|шок.*замороз|заморож|замороз|мороз|frozen", lowered):
         return "frozen"
     # базовый дефолт
     return "fresh"
@@ -61,22 +63,37 @@ def compute_unit_metrics(name_raw: str, unit_raw: Optional[str], price: Optional
     elif unit_norm in {"л", "л", "литр", "литров", "l"}:
         base_unit = "l"
         base_qty = Decimal("1")
+    elif unit_norm in {"мл", "ml"}:
+        base_unit = "l"
+        base_qty = Decimal("0.001")
     elif unit_norm in {"шт", "штука", "штук", "уп", "упак", "кор", "коробка"}:
+        pack_match = re.search(r"(\d+[\,\.]?\d*)\s*(г|гр|грам).*?/\s*(\d+)\s*шт", name_lower)
+        if pack_match and unit_norm in {"уп", "упак", "кор", "коробка"}:
+            try:
+                grams = Decimal(pack_match.group(1).replace(",", "."))
+                count = Decimal(pack_match.group(3))
+                base_unit = "kg"
+                base_qty = (grams * count * Decimal("0.001")).quantize(Decimal("0.000001"))
+            except Exception:
+                base_unit = None
+                base_qty = None
         patterns = [
             (r"(\d+[\,\.]?\d*)\s*(кг)", "kg", Decimal("1")),
             (r"(\d+[\,\.]?\d*)\s*(г|гр|грам)", "kg", Decimal("0.001")),
-            (r"(\d+[\,\.]?\d*)\s*(л|литр|ml|мл)", "l", Decimal("0.001")),
+            (r"(\d+[\,\.]?\d*)\s*(л|литр|литров)", "l", Decimal("1")),
+            (r"(\d+[\,\.]?\d*)\s*(ml|мл)", "l", Decimal("0.001")),
         ]
-        for pattern, b_unit, multiplier in patterns:
-            m = re.search(pattern, name_lower)
-            if m:
-                try:
-                    val = Decimal(m.group(1).replace(",", "."))
-                    base_unit = b_unit
-                    base_qty = (val * multiplier).quantize(Decimal("0.000001"))
-                    break
-                except Exception:
-                    continue
+        if base_unit is None and base_qty is None:
+            for pattern, b_unit, multiplier in patterns:
+                m = re.search(pattern, name_lower)
+                if m:
+                    try:
+                        val = Decimal(m.group(1).replace(",", "."))
+                        base_unit = b_unit
+                        base_qty = (val * multiplier).quantize(Decimal("0.000001"))
+                        break
+                    except Exception:
+                        continue
 
     if base_qty and price:
         try:
@@ -126,6 +143,7 @@ def ensure_schema_compare(conn):
             """
         )
         cur.execute("ALTER TABLE supplier_items ADD COLUMN IF NOT EXISTS name_normalized text;")
+        cur.execute("ALTER TABLE supplier_items ADD COLUMN IF NOT EXISTS name_search text;")
         cur.execute("ALTER TABLE supplier_items ADD COLUMN IF NOT EXISTS base_unit text;")
         cur.execute("ALTER TABLE supplier_items ADD COLUMN IF NOT EXISTS base_qty numeric(12,6);")
         cur.execute("ALTER TABLE supplier_items ADD COLUMN IF NOT EXISTS price_per_unit numeric(12,4);")
@@ -423,7 +441,34 @@ def list_excel_sheets(path: str) -> List[str]:
         with pd.ExcelFile(data, engine=engine) as xls:
             return list(xls.sheet_names)
     except Exception as e:
-        raise RuntimeError(f"Не удалось прочитать листы из файла {path}: {e}") from e
+        raise RuntimeError(f"Не удалось прочитать листы из файла: {e}") from e
+
+
+def _looks_like_text_data(path: str) -> bool:
+    try:
+        with open(path, "rb") as f:
+            sample = f.read(4096)
+    except OSError:
+        return False
+
+    if b"\x00" in sample:
+        return False
+
+    decoded = None
+    for enc in ("utf-8-sig", "utf-8", "cp1251", "latin1"):
+        try:
+            decoded = sample.decode(enc)
+            break
+        except UnicodeDecodeError:
+            continue
+
+    if decoded is None:
+        return False
+
+    if "\n" not in decoded and "\r" not in decoded:
+        return False
+
+    return any(d in decoded for d in (",", ";", "\t", "|"))
 
 
 def load_excel_rows(file_path: str, ext: str, target_sheets: Optional[List[str]] = None):
@@ -527,7 +572,7 @@ def import_price_file(
                     """
                     INSERT INTO supplier_items
                       (supplier_id, price_list_file_id, external_code, name_raw, unit, price, currency, is_active,
-                       name_normalized, base_unit, base_qty, price_per_unit, category_id)
+                       name_normalized, name_search, base_unit, base_qty, price_per_unit, category_id)
                     VALUES %s
                     """,
                     batch,
@@ -587,8 +632,9 @@ def import_price_file(
                 unit_raw = get(col_map["unit"])
 
                 name_norm = normalize_name(name_raw)
+                name_search = generate_supplier_name_search(name_raw, unit_raw) or name_norm
                 base_unit, base_qty, price_per_unit = compute_unit_metrics(name_raw, unit_raw, price_val)
-                category_code = detect_category(name_raw)
+                category_code = detect_category(name_raw, unit_raw)
                 category_id = category_map.get(category_code) if category_code else None
 
                 return (
@@ -601,6 +647,7 @@ def import_price_file(
                     "RUB",
                     True,
                     name_norm,
+                    name_search,
                     base_unit,
                     base_qty,
                     price_per_unit,
@@ -641,20 +688,30 @@ def import_price_file(
 
         # --- Excel ---
         if ext in (".xlsx", ".xlsm", ".xls"):
-            available = list_excel_sheets(file_path)
+            try:
+                available = list_excel_sheets(file_path)
 
-            if sheet_mode == "selected" and sheet_names:
-                target = [s for s in sheet_names if s in available]
-            else:
-                target = available  # auto = все листы
+                if sheet_mode == "selected" and sheet_names:
+                    target = [s for s in sheet_names if s in available]
+                else:
+                    target = available  # auto = все листы
 
-            for sname, rows in load_excel_rows(file_path, ext, target):
-                if not rows:
-                    stats.append({"sheet": sname, "imported": 0, "skipped": 0, "reason": "empty"})
-                    continue
+                for sname, rows in load_excel_rows(file_path, ext, target):
+                    if not rows:
+                        stats.append({"sheet": sname, "imported": 0, "skipped": 0, "reason": "empty"})
+                        continue
 
-                headers, data_rows, header_idx = _find_header_row(rows)
-                process_rows(sname, headers, iter(data_rows))
+                    headers, data_rows, header_idx = _find_header_row(rows)
+                    process_rows(sname, headers, iter(data_rows))
+            except Exception:
+                if _looks_like_text_data(file_path):
+                    headers, rows = load_from_csv(file_path)
+                    if not rows:
+                        stats.append({"sheet": "CSV (fallback)", "imported": 0, "skipped": 0, "reason": "empty"})
+                    else:
+                        process_rows("CSV (fallback)", headers, iter(rows))
+                else:
+                    raise
 
         # --- CSV ---
         else:

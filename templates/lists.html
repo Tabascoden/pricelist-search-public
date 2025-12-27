@@ -115,11 +115,14 @@
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify({name})
       });
-      if(r.ok) {
-        $("modal").classList.add("hidden");
-        toast("Добавлено", `Поставщик ${name} создан`);
-        loadSuppliers();
+      if(!r.ok) {
+        const j = await r.json().catch(() => ({}));
+        toast("Ошибка", j.details || j.error || "Не удалось сохранить");
+        return;
       }
+      $("modal").classList.add("hidden");
+      toast("Добавлено", `Поставщик ${name} создан`);
+      loadSuppliers();
     } catch(e) {
       toast("Ошибка", "Не удалось сохранить");
     }

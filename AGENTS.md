@@ -146,5 +146,36 @@ UPLOAD_DIR=/app/uploads
 - `orders`
 - `order_items`
 
+### Таблица учёта миграций
+Используется `public.schema_migrations`:
+- `filename text PRIMARY KEY`
+- `applied_at timestamptz NOT NULL DEFAULT now()`
+- `checksum text NULL` (sha256 содержимого файла)
+
+### Как применяются миграции
+- На старте приложения (в `create_app`) миграции запускаются **только если** включён `AUTO_MIGRATE`.
+- Берётся advisory lock (`pg_advisory_lock`), чтобы исключить параллельный запуск.
+- Выполняются только **pending** миграции (которых нет в `schema_migrations`).
+- Для применённой миграции сохраняется `checksum`.
+
+## Правила написания миграций (обязательно)
+
+1) **Нельзя править уже применённые миграции.**
+   - Если нужно поменять схему/индексы/данные — создаём **новый** файл миграции.
+
+2) Миграции должны быть максимально **идемпотентными**:
+   - `CREATE TABLE IF NOT EXISTS ...`
+   - `ALTER TABLE ... ADD COLUMN IF NOT EXISTS ...`
+   - `CREATE INDEX IF NOT EXISTS ...`
+   - `DROP ... IF EXISTS ...`
+   - для внешних ключей/constraint — проверки через `to_regclass()`/`pg_constraint` внутри `DO $$ ... $$`.
+
+3) **Не использовать** в миграциях:
+   - `\c`, `CREATE/DROP DATABASE`, жёстко прошитые имена БД.
+   - `CREATE INDEX CONCURRENTLY` (не работает внутри транзакции, если раннер коммитит миграцию как единый блок).
+
+4) Любая миграция должна работать одинаково в staging и prod.
+
+
 ---
 
