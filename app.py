@@ -758,6 +758,7 @@ def create_app() -> Flask:
             SELECT
               chosen.*,
               NULL::float AS rank,
+              chosen.score::float AS score_adj,
               NULL::int AS unit_match
             FROM chosen
             ORDER BY
@@ -1444,7 +1445,7 @@ def create_app() -> Flask:
                     prefer_freshes = []
                     prefer_frozens = []
                     avoid_processeds = []
-                    anchor_terms_list = []
+                    anchor_terms_texts = []
                     category_ids = []
                     qtys = []
                     want_base_units = []
@@ -1461,7 +1462,7 @@ def create_app() -> Flask:
                         prefer_freshes.append(info["prefer_fresh"])
                         prefer_frozens.append(info["prefer_frozen"])
                         avoid_processeds.append(info["avoid_processed"])
-                        anchor_terms_list.append(info["anchor_terms"])
+                        anchor_terms_texts.append(" ".join(info.get("anchor_terms") or []))
                         category_ids.append(item.get("category_id"))
                         qtys.append(item.get("qty"))
                         want_base_units.append(info["want_base_unit"])
@@ -1480,7 +1481,10 @@ def create_app() -> Flask:
                           ti.prefer_fresh AS prefer_fresh,
                           ti.prefer_frozen AS prefer_frozen,
                           ti.avoid_processed AS avoid_processed,
-                          ti.anchor_terms AS anchor_terms,
+                          CASE
+                            WHEN nullif(btrim(ti.anchor_terms_text), '') IS NULL THEN NULL
+                            ELSE regexp_split_to_array(ti.anchor_terms_text, '\s+')
+                          END AS anchor_terms,
                           ti.category_id AS category_id,
                           ti.want_base_unit AS want_base_unit,
                           ti.want_base_qty AS want_base_qty,
@@ -1506,7 +1510,7 @@ def create_app() -> Flask:
                             %(prefer_freshes)s::int[],
                             %(prefer_frozens)s::int[],
                             %(avoid_processeds)s::int[],
-                            %(anchor_terms_list)s::text[][],
+                            %(anchor_terms_texts)s::text[],
                             %(category_ids)s::int[],
                             %(qtys)s::numeric[],
                             %(want_base_units)s::text[],
@@ -1522,7 +1526,7 @@ def create_app() -> Flask:
                             prefer_fresh,
                             prefer_frozen,
                             avoid_processed,
-                            anchor_terms,
+                            anchor_terms_text,
                             category_id,
                             qty,
                             want_base_unit,
@@ -1561,7 +1565,7 @@ def create_app() -> Flask:
                         "prefer_freshes": prefer_freshes,
                         "prefer_frozens": prefer_frozens,
                         "avoid_processeds": avoid_processeds,
-                        "anchor_terms_list": anchor_terms_list,
+                        "anchor_terms_texts": anchor_terms_texts,
                         "category_ids": category_ids,
                         "qtys": qtys,
                         "want_base_units": want_base_units,
