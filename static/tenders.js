@@ -611,7 +611,7 @@
     `;
 
     const tbody = items.map(it => {
-      // найти минимальную цену по строке (по totalPrice)
+      // найти минимальную цену по строке (effective_price)
       const candidates = supplierIds
         .map(sid => {
           const selectedForSupplier = (it.offers || []).find(
@@ -620,18 +620,23 @@
           const m = selectedForSupplier || getMatch(it.id, sid);
           if (!m) return null;
           const score = Number(m.score);
-          if (!Number.isFinite(score) || score < MIN_SCORE) return null;
+          if (!selectedForSupplier && (!Number.isFinite(score) || score < MIN_SCORE)) return null;
           if (isBlocked(it.id, sid)) return null;
-          const { totalPrice } = calcTotals(m, it.qty);
-          return { sid, totalPrice };
+          const ppu = m.price_per_unit != null ? Number(m.price_per_unit) : null;
+          const price = m.price != null ? Number(m.price) : null;
+          if (!Number.isFinite(ppu) && !Number.isFinite(price)) return null;
+          const effectivePrice = Number.isFinite(ppu) ? ppu : price;
+          return { sid, effectivePrice, hasPpu: Number.isFinite(ppu) };
         })
         .filter(Boolean)
-        .filter(x => Number.isFinite(x.totalPrice));
+        .filter(x => Number.isFinite(x.effectivePrice));
 
       let bestSid = null;
+      let bestUsesPpu = false;
       if (candidates.length) {
-        candidates.sort((a, b) => a.totalPrice - b.totalPrice);
+        candidates.sort((a, b) => a.effectivePrice - b.effectivePrice);
         bestSid = candidates[0].sid;
+        bestUsesPpu = candidates[0].hasPpu;
       }
 
       const selectedOfferId = it.selected_offer_id ? Number(it.selected_offer_id) : null;
@@ -675,8 +680,10 @@
           `;
         }
 
-        const { totalPrice } = calcTotals(m, it.qty);
         const supplierPrice = m.price;
+        const bestNote = (!picked && bestSid === sid)
+          ? (bestUsesPpu ? "по цене/ед" : "по цене (цена/ед не указана)")
+          : "";
         const cls = [
           "supplierCell",
           picked ? "picked" : "",
@@ -697,6 +704,7 @@
               <div class="supPrice">${esc(fmtMoney(supplierPrice))}</div>
               <div class="supScore">цена/ед: ${esc(fmtMoney(m.price_per_unit ?? m.price))}</div>
             </div>
+            ${bestNote ? `<div class="supScore">выгодно: ${esc(bestNote)}</div>` : ""}
             <div class="iconRow">
               <button class="iconBtn" title="Скрыть" data-block="${esc(key)}">✕</button>
               <button class="iconBtn" title="Найти другой" data-find="1" data-item-id="${esc(it.id)}" data-supplier-id="${esc(sid)}">🔍</button>
