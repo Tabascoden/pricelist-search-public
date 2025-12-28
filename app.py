@@ -621,6 +621,13 @@ def create_app() -> Flask:
         unique.sort(key=lambda t: (-len(t), t))
         return unique[:2]
 
+    def _build_star_search_name(name_raw: Optional[str]) -> str:
+        base = normalize_base(name_raw) if name_raw else ""
+        if not base:
+            return ""
+        base = re.sub(r"\b(св\.?|свеж\w*|охл\.?|охлажд\w*)\b", " ", base)
+        return normalize_base(generate_search_name(base) or "")
+
     def _build_tender_query_info(item: Dict[str, Any], q_input: Optional[str] = None) -> Dict[str, Any]:
         q_user = normalize_base(q_input) if q_input else ""
         name_input = item.get("name_input") or ""
@@ -653,6 +660,8 @@ def create_app() -> Flask:
         if prefer_text:
             if re.search(r"(с/м|с\s*/\s*м|замор|заморож|frozen|мороз|шок.*замор)", prefer_text.lower()):
                 prefer_frozen = 1
+        avoid_frozen = 1 if prefer_fresh else 0
+        require_frozen = 1 if prefer_frozen else 0
         anchor_terms = _extract_anchor_terms(q_text_full)
         want_base_unit, want_base_qty = _extract_unit_hint(name_input, item.get("unit_input"))
         if want_base_qty is None and pinned:
@@ -667,6 +676,8 @@ def create_app() -> Flask:
             "q_like": q_like,
             "prefer_fresh": prefer_fresh,
             "prefer_frozen": prefer_frozen,
+            "avoid_frozen": avoid_frozen,
+            "require_frozen": require_frozen,
             "avoid_processed": prefer_fresh,
             "anchor_terms": anchor_terms,
             "want_base_unit": want_base_unit,
@@ -674,57 +685,10 @@ def create_app() -> Flask:
             "is_pinned": pinned,
         }
 
-    def _tender_candidates_sql(query_source: str) -> str:
+    def _tender_candidates_sql(query_source: str, *, matrix_mode: bool = False) -> str:
         search_expr = "coalesce(base.name_search, base.name_raw)"
         score_expr = f"greatest(similarity({search_expr}, query.q_text_full), word_similarity(query.q_text_full, {search_expr}))"
-        return f"""
-            WITH query AS (
-              {query_source}
-            ),
-            base AS (
-              SELECT
-                si.id AS supplier_item_id,
-                si.supplier_id,
-                si.name_raw,
-                si.name_search AS name_search,
-                si.unit,
-                si.price,
-                si.base_unit,
-                si.base_qty,
-                si.price_per_unit
-              FROM supplier_items si, query
-              WHERE si.supplier_id = query.supplier_id
-                AND si.is_active IS TRUE
-                AND (query.category_id IS NULL OR si.category_id = query.category_id)
-                AND (query.q_filter IS NULL OR coalesce(si.name_search, si.name_raw) ILIKE query.q_like)
-                AND (
-                  query.avoid_processed = 0 OR (
-                    (si.name_raw IS NULL OR si.name_raw !~* %(processed_re)s)
-                    AND (si.name_search IS NULL OR si.name_search !~* %(processed_re)s)
-                  )
-                )
-            ),
-            strict AS (
-              SELECT
-                base.*,
-                1.0::float AS score,
-                'strict'::text AS mode
-              FROM base, query
-              WHERE query.anchor_terms IS NOT NULL
-                AND array_length(query.anchor_terms, 1) > 0
-                AND (
-                  SELECT bool_and(
-                    ({search_expr} ILIKE '%%' || term || '%%' OR base.name_raw ILIKE '%%' || term || '%%')
-                  )
-                  FROM unnest(query.anchor_terms) AS term
-                )
-              ORDER BY
-                (base.price_per_unit IS NULL) ASC,
-                base.price_per_unit ASC NULLS LAST,
-                base.price ASC NULLS LAST,
-                base.supplier_item_id DESC
-              LIMIT %(limit)s
-            ),
+        fuzzy_block = f"""
             fuzzy_candidates AS (
               SELECT
                 base.*,
@@ -776,6 +740,129 @@ def create_app() -> Flask:
               SELECT * FROM fuzzy
               WHERE NOT EXISTS (SELECT 1 FROM strict)
             )
+        """
+        if matrix_mode:
+            fuzzy_block = f"""
+            pinned_candidates AS (
+              SELECT
+                base.*,
+                {score_expr} AS score
+              FROM base, query
+              WHERE query.is_pinned IS TRUE
+                AND query.anchor_terms IS NOT NULL
+                AND array_length(query.anchor_terms, 1) > 0
+                AND query.q_text_full IS NOT NULL
+                AND length(trim(query.q_text_full)) > 0
+                AND EXISTS (
+                  SELECT 1
+                  FROM unnest(query.anchor_terms) AS term
+                  WHERE ({search_expr} ILIKE '%%' || term || '%%' OR base.name_raw ILIKE '%%' || term || '%%')
+                )
+                AND (
+                  (base.name_search IS NOT NULL AND base.name_search %% query.q_text_full)
+                  OR (base.name_search IS NULL AND base.name_raw %% query.q_text_full)
+                )
+              ORDER BY
+                score DESC
+              LIMIT %(trgm_candidates)s
+            ),
+            pinned AS (
+              SELECT
+                base.*,
+                'pinned'::text AS mode
+              FROM pinned_candidates base, query
+              WHERE query.is_pinned IS TRUE
+                AND base.score >= %(min_score)s
+              ORDER BY
+                score DESC,
+                base.supplier_item_id DESC
+              LIMIT %(limit)s
+            ),
+            chosen AS (
+              SELECT * FROM pinned
+              UNION ALL
+              SELECT * FROM strict
+              WHERE NOT EXISTS (SELECT 1 FROM pinned)
+            )
+        """
+        order_clause = """
+              CASE WHEN mode='strict' THEN 0 ELSE 1 END,
+              CASE WHEN mode='fuzzy' THEN score END DESC NULLS LAST,
+              (price_per_unit IS NULL) ASC,
+              price_per_unit ASC NULLS LAST,
+              price ASC NULLS LAST,
+              supplier_item_id DESC
+        """
+        if matrix_mode:
+            order_clause = """
+              CASE WHEN mode='pinned' THEN 0 WHEN mode='strict' THEN 1 ELSE 2 END,
+              CASE WHEN mode='pinned' THEN score END DESC NULLS LAST,
+              (price_per_unit IS NULL) ASC,
+              price_per_unit ASC NULLS LAST,
+              price ASC NULLS LAST,
+              supplier_item_id DESC
+            """
+        return f"""
+            WITH query AS (
+              {query_source}
+            ),
+            base AS (
+              SELECT
+                si.id AS supplier_item_id,
+                si.supplier_id,
+                si.name_raw,
+                si.name_search AS name_search,
+                si.unit,
+                si.price,
+                si.base_unit,
+                si.base_qty,
+                si.price_per_unit
+              FROM supplier_items si, query
+              WHERE si.supplier_id = query.supplier_id
+                AND si.is_active IS TRUE
+                AND (query.category_id IS NULL OR si.category_id = query.category_id)
+                AND (query.q_filter IS NULL OR coalesce(si.name_search, si.name_raw) ILIKE query.q_like)
+                AND (
+                  query.avoid_frozen = 0 OR (
+                    (si.name_raw IS NULL OR si.name_raw !~* %(frozen_re)s)
+                    AND (si.name_search IS NULL OR si.name_search !~* %(frozen_re)s)
+                  )
+                )
+                AND (
+                  query.require_frozen = 0 OR (
+                    (si.name_raw IS NOT NULL AND si.name_raw ~* %(frozen_re)s)
+                    OR (si.name_search IS NOT NULL AND si.name_search ~* %(frozen_re)s)
+                  )
+                )
+                AND (
+                  query.avoid_processed = 0 OR (
+                    (si.name_raw IS NULL OR si.name_raw !~* %(processed_re)s)
+                    AND (si.name_search IS NULL OR si.name_search !~* %(processed_re)s)
+                  )
+                )
+            ),
+            strict AS (
+              SELECT
+                base.*,
+                1.0::float AS score,
+                'strict'::text AS mode
+              FROM base, query
+              WHERE query.anchor_terms IS NOT NULL
+                AND array_length(query.anchor_terms, 1) > 0
+                AND (
+                  SELECT bool_and(
+                    ({search_expr} ILIKE '%%' || term || '%%' OR base.name_raw ILIKE '%%' || term || '%%')
+                  )
+                  FROM unnest(query.anchor_terms) AS term
+                )
+              ORDER BY
+                (base.price_per_unit IS NULL) ASC,
+                base.price_per_unit ASC NULLS LAST,
+                base.price ASC NULLS LAST,
+                base.supplier_item_id DESC
+              LIMIT %(limit)s
+            ),
+            {fuzzy_block}
             SELECT
               chosen.*,
               NULL::float AS rank,
@@ -783,12 +870,7 @@ def create_app() -> Flask:
               NULL::int AS unit_match
             FROM chosen
             ORDER BY
-              CASE WHEN mode='strict' THEN 0 ELSE 1 END,
-              CASE WHEN mode='fuzzy' THEN score END DESC NULLS LAST,
-              (price_per_unit IS NULL) ASC,
-              price_per_unit ASC NULLS LAST,
-              price ASC NULLS LAST,
-              supplier_item_id DESC
+              {order_clause}
             LIMIT %(limit)s
         """
 
@@ -1303,15 +1385,10 @@ def create_app() -> Flask:
 
                     default_search = normalize_base(generate_search_name(item["name_input"]) or "")
                     name_raw = supplier_item.get("name_raw") or ""
-                    unit_raw = supplier_item.get("unit") or ""
-                    if re.search(r"\d+(?:[\.,]\d+)?\s*(кг|г|гр|л|мл)\b", name_raw, re.IGNORECASE):
-                        supplier_text = name_raw.strip()
-                    else:
-                        supplier_text = f"{name_raw} {unit_raw}".strip()
-                    target_search = normalize_base(supplier_text)
+                    target_search = _build_star_search_name(name_raw)
                     if item.get("star_supplier_item_id") == supplier_item_id:
                         next_star_id = None
-                        next_search = default_search
+                        next_search = None
                     else:
                         next_star_id = supplier_item_id
                         next_search = target_search
@@ -1467,6 +1544,8 @@ def create_app() -> Flask:
                     q_likes = []
                     prefer_freshes = []
                     prefer_frozens = []
+                    avoid_frozens = []
+                    require_frozens = []
                     avoid_processeds = []
                     anchor_terms_texts = []
                     category_ids = []
@@ -1484,6 +1563,8 @@ def create_app() -> Flask:
                         q_likes.append(info["q_like"])
                         prefer_freshes.append(info["prefer_fresh"])
                         prefer_frozens.append(info["prefer_frozen"])
+                        avoid_frozens.append(info["avoid_frozen"])
+                        require_frozens.append(info["require_frozen"])
                         avoid_processeds.append(info["avoid_processed"])
                         anchor_terms_texts.append(" ".join(info.get("anchor_terms") or []))
                         category_ids.append(item.get("category_id"))
@@ -1503,6 +1584,8 @@ def create_app() -> Flask:
                           ti.q_like AS q_like,
                           ti.prefer_fresh AS prefer_fresh,
                           ti.prefer_frozen AS prefer_frozen,
+                          ti.avoid_frozen AS avoid_frozen,
+                          ti.require_frozen AS require_frozen,
                           ti.avoid_processed AS avoid_processed,
                           CASE
                             WHEN nullif(btrim(ti.anchor_terms_text), '') IS NULL THEN NULL
@@ -1515,7 +1598,8 @@ def create_app() -> Flask:
                           sup.supplier_id AS supplier_id,
                           ti.is_pinned AS is_pinned,
                           ti.star_supplier_item_id AS star_supplier_item_id
-                        """
+                        """,
+                        matrix_mode=True,
                     )
 
                     sql = f"""
@@ -1532,6 +1616,8 @@ def create_app() -> Flask:
                             %(q_likes)s::text[],
                             %(prefer_freshes)s::int[],
                             %(prefer_frozens)s::int[],
+                            %(avoid_frozens)s::int[],
+                            %(require_frozens)s::int[],
                             %(avoid_processeds)s::int[],
                             %(anchor_terms_texts)s::text[],
                             %(category_ids)s::int[],
@@ -1548,6 +1634,8 @@ def create_app() -> Flask:
                             q_like,
                             prefer_fresh,
                             prefer_frozen,
+                            avoid_frozen,
+                            require_frozen,
                             avoid_processed,
                             anchor_terms_text,
                             category_id,
@@ -1587,6 +1675,8 @@ def create_app() -> Flask:
                         "q_likes": q_likes,
                         "prefer_freshes": prefer_freshes,
                         "prefer_frozens": prefer_frozens,
+                        "avoid_frozens": avoid_frozens,
+                        "require_frozens": require_frozens,
                         "avoid_processeds": avoid_processeds,
                         "anchor_terms_texts": anchor_terms_texts,
                         "category_ids": category_ids,
@@ -1600,6 +1690,7 @@ def create_app() -> Flask:
                         "fts_candidates": fts_candidates,
                         "trgm_candidates": trgm_candidates,
                         "processed_re": "(марин|маринад|консерв|солен|рассол|в\\s+рассоле|квашен|резан|нарез)",
+                        "frozen_re": "(с/м|с\\s*/\\s*м|замор|заморож|frozen|мороз)",
                         "tender_text_tie_abs_eps": TENDER_TEXT_TIE_ABS_EPS,
                         "tender_text_tie_rel_eps": TENDER_TEXT_TIE_REL_EPS,
                         "tender_prefix_bonus": TENDER_PREFIX_BONUS,
@@ -1938,6 +2029,8 @@ def create_app() -> Flask:
                           %(q_like)s::text AS q_like,
                           %(prefer_fresh)s::int AS prefer_fresh,
                           %(prefer_frozen)s::int AS prefer_frozen,
+                          %(avoid_frozen)s::int AS avoid_frozen,
+                          %(require_frozen)s::int AS require_frozen,
                           %(avoid_processed)s::int AS avoid_processed,
                           %(anchor_terms)s::text[] AS anchor_terms,
                           %(category_id)s::int AS category_id,
@@ -1961,6 +2054,8 @@ def create_app() -> Flask:
                             "q_like": query_info["q_like"],
                             "prefer_fresh": query_info["prefer_fresh"],
                             "prefer_frozen": query_info["prefer_frozen"],
+                            "avoid_frozen": query_info["avoid_frozen"],
+                            "require_frozen": query_info["require_frozen"],
                             "avoid_processed": query_info["avoid_processed"],
                             "anchor_terms": query_info["anchor_terms"],
                             "want_base_unit": query_info["want_base_unit"],
@@ -1972,6 +2067,7 @@ def create_app() -> Flask:
                             "fts_candidates": fts_candidates,
                             "trgm_candidates": trgm_candidates,
                             "processed_re": "(марин|маринад|консерв|солен|рассол|в\\s+рассоле|квашен|резан|нарез)",
+                            "frozen_re": "(с/м|с\\s*/\\s*м|замор|заморож|frozen|мороз)",
                             "tender_text_tie_abs_eps": TENDER_TEXT_TIE_ABS_EPS,
                             "tender_text_tie_rel_eps": TENDER_TEXT_TIE_REL_EPS,
                             "tender_prefix_bonus": TENDER_PREFIX_BONUS,
