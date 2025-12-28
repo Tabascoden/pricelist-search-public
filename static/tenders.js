@@ -171,6 +171,27 @@
     return !!state.blocked?.[`${itemId}:${supplierId}`];
   }
 
+  let tenderGridListenersBound = false;
+  let tenderGridRaf = 0;
+  function ensureTenderGridMaxHeight() {
+    if (tenderGridRaf) return;
+    tenderGridRaf = requestAnimationFrame(() => {
+      tenderGridRaf = 0;
+      const grid = $("#tenders-grid");
+      if (!grid || grid.offsetParent === null) return;
+      const rect = grid.getBoundingClientRect();
+      const available = window.innerHeight - rect.top - 24;
+      if (!Number.isFinite(available)) return;
+      grid.style.maxHeight = `${Math.max(160, Math.floor(available))}px`;
+    });
+  }
+
+  function bindTenderGridMaxHeight() {
+    if (tenderGridListenersBound) return;
+    tenderGridListenersBound = true;
+    window.addEventListener("resize", ensureTenderGridMaxHeight);
+  }
+
   // ---------- data loading ----------
   async function loadProjects() {
     const j = await apiJson("/api/tenders");
@@ -604,6 +625,8 @@
     renderSelectedSuppliersChipline();
     renderProjectTable();
     renderCart();
+    ensureTenderGridMaxHeight();
+    bindTenderGridMaxHeight();
   }
 
   function renderProjectTable() {
@@ -614,8 +637,8 @@
     const thead = `
       <thead>
         <tr>
-          <th style="width:70px;">№</th>
-          <th style="min-width:130px;">Номенклатура</th>
+          <th class="sticky-col-1" style="width:70px;">№</th>
+          <th class="sticky-col-2" style="min-width:130px;">Номенклатура</th>
           <th style="width:70px;">Кол-во</th>
           <th style="width:90px;">Ед.</th>
           ${supplierIds.map(id => `<th class="supplierTh">${esc(getSupplierName(id))}</th>`).join("")}
@@ -729,8 +752,8 @@
       const qtyValue = it.qty != null ? String(it.qty) : "";
       return `
         <tr>
-          <td>${esc(it.row_no ?? "")}</td>
-          <td><b>${esc(it.name_input || "")}</b></td>
+          <td class="sticky-col-1">${esc(it.row_no ?? "")}</td>
+          <td class="sticky-col-2"><b>${esc(it.name_input || "")}</b></td>
           <td>
             <input
               class="input input-qty"
