@@ -23,7 +23,7 @@ from werkzeug.utils import secure_filename
 
 import import_price
 import pandas as pd
-from search_text import generate_search_name, normalize_base
+from search_text import generate_search_name, normalize_base, tokenize
 
 try:
     from openpyxl import Workbook
@@ -86,8 +86,24 @@ def create_app() -> Flask:
         )
 
     def _json_safe(v):
+        if isinstance(v, str):
+            if v.strip().lower() == "nan":
+                return None
+            return v
         if isinstance(v, Decimal):
-            return float(v)
+            if not v.is_finite():
+                return None
+            try:
+                as_float = float(v)
+            except (OverflowError, ValueError):
+                return None
+            return as_float if math.isfinite(as_float) else None
+        if isinstance(v, float):
+            return v if math.isfinite(v) else None
+        if isinstance(v, dict):
+            return {k: _json_safe(val) for k, val in v.items()}
+        if isinstance(v, (list, tuple, set)):
+            return [_json_safe(val) for val in v]
         return v
 
     def _scalar(row, key=None):
@@ -432,6 +448,52 @@ def create_app() -> Flask:
         idx_unit = pick("ед", "единица", "unit", "ед.")
         idx_cat = pick("категория", "category")
 
+        def _string_or_none(value: Any) -> Optional[str]:
+            if value is None:
+                return None
+            if isinstance(value, str):
+                text = value.strip()
+                if not text or text.lower() == "nan":
+                    return None
+                return text
+            if pd.isna(value):
+                return None
+            text = str(value).strip()
+            if not text or text.lower() == "nan":
+                return None
+            return text
+
+        def _parse_qty(value: Any) -> Optional[float]:
+            if value is None:
+                return None
+            if isinstance(value, str):
+                raw = value.strip()
+                if not raw or raw.lower() == "nan":
+                    return None
+                raw = raw.replace(",", ".")
+                try:
+                    qty_val = float(raw)
+                except Exception:
+                    return None
+            else:
+                if pd.isna(value):
+                    return None
+                if isinstance(value, Decimal):
+                    if not value.is_finite():
+                        return None
+                    try:
+                        qty_val = float(value)
+                    except Exception:
+                        return None
+                else:
+                    try:
+                        qty_val = float(value)
+                    except Exception:
+                        return None
+            if not math.isfinite(qty_val):
+                return None
+            return qty_val
+
         with conn.cursor() as cur:
             cur.execute("SELECT COALESCE(MAX(row_no), 0) FROM tender_items WHERE project_id=%s;", (project_id,))
             row_no = _scalar(cur.fetchone()) or 0
@@ -439,21 +501,19 @@ def create_app() -> Flask:
             items_to_insert = []
             for row in df.itertuples(index=False):
                 row_list = list(row)
-                name_val = str(row_list[idx_name]).strip() if idx_name is not None else ""
+                name_val = _string_or_none(row_list[idx_name]) if idx_name is not None else None
                 if not name_val:
                     continue
                 qty_val = None
                 if idx_qty is not None and idx_qty < len(row_list):
-                    try:
-                        qty_val = float(row_list[idx_qty]) if row_list[idx_qty] not in (None, "") else None
-                    except Exception:
-                        qty_val = None
+                    qty_val = _parse_qty(row_list[idx_qty])
                 unit_val = None
                 if idx_unit is not None and idx_unit < len(row_list):
-                    unit_val = str(row_list[idx_unit]).strip() or None
+                    unit_val = _string_or_none(row_list[idx_unit])
                 cat_val = None
                 if idx_cat is not None and idx_cat < len(row_list):
-                    cat_val = normalize_category_value(row_list[idx_cat])
+                    cat_raw = _string_or_none(row_list[idx_cat])
+                    cat_val = normalize_category_value(cat_raw) if cat_raw else None
                 category_id = category_map.get(cat_val) if cat_val else None
                 row_no += 1
                 search_name = normalize_base(generate_search_name(name_val) or "") or None
@@ -515,6 +575,59 @@ def create_app() -> Flask:
             f"ELSE plainto_tsquery('russian', {cleaned}) END"
         )
 
+    _TENDER_ANCHOR_STOP_PREFIXES = (
+        "св",
+        "свеж",
+        "охл",
+        "охлажд",
+        "замор",
+        "марин",
+        "консерв",
+        "солен",
+        "рассол",
+        "квашен",
+        "резан",
+        "нарез",
+    )
+
+    def _has_fresh_marker(text: str) -> bool:
+        if not text:
+            return False
+        lowered = text.lower()
+        if re.search(r"(свеж|охл|охлажд|fresh)", lowered):
+            return True
+        return re.search(r"(?<![a-zа-я])св\.?(?![a-zа-я])", lowered) is not None
+
+    def _extract_anchor_terms(text: str) -> List[str]:
+        if not text:
+            return []
+        normalized = normalize_base(text)
+        tokens = tokenize(normalized)
+        cleaned = []
+        for token in tokens:
+            if not token or len(token) < 3:
+                continue
+            if token.isdigit():
+                continue
+            if any(token.startswith(prefix) for prefix in _TENDER_ANCHOR_STOP_PREFIXES):
+                continue
+            cleaned.append(token)
+        if not cleaned:
+            return []
+        unique = []
+        for token in cleaned:
+            if token not in unique:
+                unique.append(token)
+        unique.sort(key=lambda t: (-len(t), t))
+        return unique[:2]
+
+    def _build_star_search_name(name_raw: Optional[str]) -> str:
+        base = normalize_base(name_raw) if name_raw else ""
+        if not base:
+            return ""
+        base = re.sub(r"\b(св\.?|свеж\w*|охл\.?|охлажд\w*)\b", " ", base)
+        return normalize_base(generate_search_name(base) or "")
+
     def _build_tender_query_info(item: Dict[str, Any], q_input: Optional[str] = None) -> Dict[str, Any]:
         q_user = normalize_base(q_input) if q_input else ""
         name_input = item.get("name_input") or ""
@@ -541,14 +654,15 @@ def create_app() -> Flask:
             q_text_core = core
         q_filter = q_user or None
         q_like = f"%{q_filter}%" if q_filter else None
-        prefer_fresh = 0
+        prefer_text = f"{name_input} {q_input or ''}".strip()
+        prefer_fresh = 1 if _has_fresh_marker(prefer_text) else 0
         prefer_frozen = 0
-        prefer_text = f"{name_input} {q_input or ''}".strip().lower()
         if prefer_text:
-            if re.search(r"(свеж|охл|охлажд|fresh)", prefer_text):
-                prefer_fresh = 1
-            if re.search(r"(с/м|с\s*/\s*м|замор|заморож|frozen|мороз|шок.*замор)", prefer_text):
+            if re.search(r"(с/м|с\s*/\s*м|замор|заморож|frozen|мороз|шок.*замор)", prefer_text.lower()):
                 prefer_frozen = 1
+        avoid_frozen = 1 if prefer_fresh else 0
+        require_frozen = 1 if prefer_frozen else 0
+        anchor_terms = _extract_anchor_terms(q_text_full)
         want_base_unit, want_base_qty = _extract_unit_hint(name_input, item.get("unit_input"))
         if want_base_qty is None and pinned:
             unit_hint_input = search_name or name_input
@@ -562,203 +676,201 @@ def create_app() -> Flask:
             "q_like": q_like,
             "prefer_fresh": prefer_fresh,
             "prefer_frozen": prefer_frozen,
+            "avoid_frozen": avoid_frozen,
+            "require_frozen": require_frozen,
+            "avoid_processed": prefer_fresh,
+            "anchor_terms": anchor_terms,
             "want_base_unit": want_base_unit,
             "want_base_qty": want_base_qty,
             "is_pinned": pinned,
         }
 
-    def _tender_candidates_sql(query_source: str) -> str:
-        score_expr = """
-        CASE
-          WHEN length(query.q_text_core) <= 4 THEN greatest(
-            similarity(si.name_search, query.q_text_core),
-            word_similarity(query.q_text_core, si.name_search),
-            word_similarity(query.q_text_full, si.name_search)
-          )
-          ELSE greatest(
-            similarity(si.name_search, query.q_text_core),
-            word_similarity(query.q_text_core, si.name_search),
-            similarity(si.name_search, query.q_text_full),
-            word_similarity(query.q_text_full, si.name_search)
-          )
-        END
+    def _tender_candidates_sql(query_source: str, *, matrix_mode: bool = False) -> str:
+        search_expr = "coalesce(base.name_search, base.name_raw)"
+        score_expr = f"greatest(similarity({search_expr}, query.q_text_full), word_similarity(query.q_text_full, {search_expr}))"
+        fuzzy_block = f"""
+            fuzzy_candidates AS (
+              SELECT
+                base.*,
+                {score_expr} AS score
+              FROM base, query
+              WHERE query.q_text_full IS NOT NULL
+                AND length(trim(query.q_text_full)) > 0
+                AND (
+                  query.anchor_terms IS NULL
+                  OR array_length(query.anchor_terms, 1) = 0
+                  OR NOT EXISTS (SELECT 1 FROM strict)
+                )
+                AND (
+                  query.anchor_terms IS NULL
+                  OR array_length(query.anchor_terms, 1) = 0
+                  OR EXISTS (
+                    SELECT 1
+                    FROM unnest(query.anchor_terms) AS term
+                    WHERE ({search_expr} ILIKE '%%' || term || '%%' OR base.name_raw ILIKE '%%' || term || '%%')
+                  )
+                )
+                AND (
+                  (base.name_search IS NOT NULL AND base.name_search %% query.q_text_full)
+                  OR (base.name_search IS NULL AND base.name_raw %% query.q_text_full)
+                )
+              ORDER BY
+                score DESC
+              LIMIT %(trgm_candidates)s
+            ),
+            fuzzy AS (
+              SELECT
+                base.*,
+                'fuzzy'::text AS mode
+              FROM fuzzy_candidates base, query
+              WHERE query.q_text_full IS NOT NULL
+                AND length(trim(query.q_text_full)) > 0
+                AND base.score >= %(min_score)s
+              ORDER BY
+                score DESC,
+                (base.price_per_unit IS NULL) ASC,
+                base.price_per_unit ASC NULLS LAST,
+                base.price ASC NULLS LAST,
+                base.supplier_item_id DESC
+              LIMIT %(limit)s
+            ),
+            chosen AS (
+              SELECT * FROM strict
+              UNION ALL
+              SELECT * FROM fuzzy
+              WHERE NOT EXISTS (SELECT 1 FROM strict)
+            )
         """
+        if matrix_mode:
+            fuzzy_block = f"""
+            pinned_candidates AS (
+              SELECT
+                base.*,
+                {score_expr} AS score
+              FROM base, query
+              WHERE query.is_pinned IS TRUE
+                AND query.anchor_terms IS NOT NULL
+                AND array_length(query.anchor_terms, 1) > 0
+                AND query.q_text_full IS NOT NULL
+                AND length(trim(query.q_text_full)) > 0
+                AND EXISTS (
+                  SELECT 1
+                  FROM unnest(query.anchor_terms) AS term
+                  WHERE ({search_expr} ILIKE '%%' || term || '%%' OR base.name_raw ILIKE '%%' || term || '%%')
+                )
+                AND (
+                  (base.name_search IS NOT NULL AND base.name_search %% query.q_text_full)
+                  OR (base.name_search IS NULL AND base.name_raw %% query.q_text_full)
+                )
+              ORDER BY
+                score DESC
+              LIMIT %(trgm_candidates)s
+            ),
+            pinned AS (
+              SELECT
+                base.*,
+                'pinned'::text AS mode
+              FROM pinned_candidates base, query
+              WHERE query.is_pinned IS TRUE
+                AND base.score >= %(min_score)s
+              ORDER BY
+                score DESC,
+                base.supplier_item_id DESC
+              LIMIT %(limit)s
+            ),
+            chosen AS (
+              SELECT * FROM pinned
+              UNION ALL
+              SELECT * FROM strict
+              WHERE NOT EXISTS (SELECT 1 FROM pinned)
+            )
+        """
+        order_clause = """
+              CASE WHEN mode='strict' THEN 0 ELSE 1 END,
+              CASE WHEN mode='fuzzy' THEN score END DESC NULLS LAST,
+              (price_per_unit IS NULL) ASC,
+              price_per_unit ASC NULLS LAST,
+              price ASC NULLS LAST,
+              supplier_item_id DESC
+        """
+        if matrix_mode:
+            order_clause = """
+              CASE WHEN mode='pinned' THEN 0 WHEN mode='strict' THEN 1 ELSE 2 END,
+              CASE WHEN mode='pinned' THEN score END DESC NULLS LAST,
+              (price_per_unit IS NULL) ASC,
+              price_per_unit ASC NULLS LAST,
+              price ASC NULLS LAST,
+              supplier_item_id DESC
+            """
         return f"""
             WITH query AS (
               {query_source}
             ),
-            fts AS (
+            base AS (
               SELECT
                 si.id AS supplier_item_id,
                 si.supplier_id,
                 si.name_raw,
-                si.name_search,
+                si.name_search AS name_search,
                 si.unit,
                 si.price,
                 si.base_unit,
                 si.base_qty,
-                si.price_per_unit,
-                ts_rank(si.name_search_tsv, query.tsq) AS rank,
-                {score_expr} AS score,
-                'fts'::text AS mode
+                si.price_per_unit
               FROM supplier_items si, query
               WHERE si.supplier_id = query.supplier_id
                 AND si.is_active IS TRUE
                 AND (query.category_id IS NULL OR si.category_id = query.category_id)
-                AND (query.q_filter IS NULL OR si.name_search ILIKE query.q_like)
-                AND query.tsq IS NOT NULL
-                AND si.name_search_tsv @@ query.tsq
-                AND ts_rank(si.name_search_tsv, query.tsq) >= %(min_rank)s
-              ORDER BY rank DESC, score DESC, si.price_per_unit ASC NULLS LAST, si.id DESC
-              LIMIT %(fts_candidates)s
+                AND (query.q_filter IS NULL OR coalesce(si.name_search, si.name_raw) ILIKE query.q_like)
+                AND (
+                  query.avoid_frozen = 0 OR (
+                    (si.name_raw IS NULL OR si.name_raw !~* %(frozen_re)s)
+                    AND (si.name_search IS NULL OR si.name_search !~* %(frozen_re)s)
+                  )
+                )
+                AND (
+                  query.require_frozen = 0 OR (
+                    (si.name_raw IS NOT NULL AND si.name_raw ~* %(frozen_re)s)
+                    OR (si.name_search IS NOT NULL AND si.name_search ~* %(frozen_re)s)
+                  )
+                )
+                AND (
+                  query.avoid_processed = 0 OR (
+                    (si.name_raw IS NULL OR si.name_raw !~* %(processed_re)s)
+                    AND (si.name_search IS NULL OR si.name_search !~* %(processed_re)s)
+                  )
+                )
             ),
-            trgm AS (
+            strict AS (
               SELECT
-                si.id AS supplier_item_id,
-                si.supplier_id,
-                si.name_raw,
-                si.name_search,
-                si.unit,
-                si.price,
-                si.base_unit,
-                si.base_qty,
-                si.price_per_unit,
-                0.0::float AS rank,
-                {score_expr} AS score,
-                'trgm'::text AS mode
-              FROM supplier_items si, query
-              WHERE si.supplier_id = query.supplier_id
-                AND si.is_active IS TRUE
-                AND (query.category_id IS NULL OR si.category_id = query.category_id)
-                AND (query.q_filter IS NULL OR si.name_search ILIKE query.q_like)
-                AND {score_expr} >= %(min_score)s
-              ORDER BY score DESC, si.price_per_unit ASC NULLS LAST, si.id DESC
-              LIMIT %(trgm_candidates)s
+                base.*,
+                1.0::float AS score,
+                'strict'::text AS mode
+              FROM base, query
+              WHERE query.anchor_terms IS NOT NULL
+                AND array_length(query.anchor_terms, 1) > 0
+                AND (
+                  SELECT bool_and(
+                    ({search_expr} ILIKE '%%' || term || '%%' OR base.name_raw ILIKE '%%' || term || '%%')
+                  )
+                  FROM unnest(query.anchor_terms) AS term
+                )
+              ORDER BY
+                (base.price_per_unit IS NULL) ASC,
+                base.price_per_unit ASC NULLS LAST,
+                base.price ASC NULLS LAST,
+                base.supplier_item_id DESC
+              LIMIT %(limit)s
             ),
-            combined AS (
-              SELECT * FROM fts
-              UNION ALL
-              SELECT * FROM trgm
-              WHERE NOT EXISTS (SELECT 1 FROM fts)
-            ),
-            ranked_base AS (
-              SELECT
-                combined.*,
-                query.query_item_id AS query_item_id,
-                query.is_pinned AS is_pinned,
-                (query.q_text_core IS NOT NULL AND length(trim(query.q_text_core)) > 0) AS core_nonempty,
-                coalesce(array_length(regexp_split_to_array(nullif(trim(query.q_text_core), ''), '\\s+'), 1), 0) AS q_words,
-                coalesce(array_length(regexp_split_to_array(nullif(trim(combined.name_search), ''), '\\s+'), 1), 0) AS si_words,
-                CASE
-                  WHEN (query.q_text_core IS NOT NULL AND length(trim(query.q_text_core)) > 0)
-                   AND left(coalesce(combined.name_search, ''), length(query.q_text_core)) = query.q_text_core
-                  THEN TRUE ELSE FALSE
-                END AS is_prefix,
-                CASE
-                  WHEN query.want_base_unit IS NOT NULL
-                    AND query.want_base_qty IS NOT NULL
-                    AND combined.base_unit = query.want_base_unit
-                    AND combined.base_qty BETWEEN query.want_base_qty * 0.9 AND query.want_base_qty * 1.1
-                  THEN 1 ELSE 0
-                END AS unit_match,
-                CASE
-                  WHEN query.star_supplier_item_id IS NOT NULL
-                   AND combined.supplier_item_id = query.star_supplier_item_id
-                  THEN 1 ELSE 0
-                END AS is_star_exact,
-                CASE
-                  WHEN combined.name_raw ~* '(с/м|с\\s*/\\s*м|замор|заморож|frozen|мороз)'
-                    OR combined.name_search ~* '(с/м|с\\s*/\\s*м|замор|заморож|frozen|мороз)'
-                  THEN 1 ELSE 0
-                END AS is_frozen,
-                CASE
-                  WHEN query.prefer_fresh = 1 AND (
-                    combined.name_raw ~* '(с/м|с\\s*/\\s*м|замор|заморож|frozen|мороз)'
-                    OR combined.name_search ~* '(с/м|с\\s*/\\s*м|замор|заморож|frozen|мороз)'
-                  ) THEN 0
-                  WHEN query.prefer_frozen = 1 AND NOT (
-                    combined.name_raw ~* '(с/м|с\\s*/\\s*м|замор|заморож|frozen|мороз)'
-                    OR combined.name_search ~* '(с/м|с\\s*/\\s*м|замор|заморож|frozen|мороз)'
-                  ) THEN 0
-                  ELSE 1
-                END AS freshness_match
-              FROM combined, query
-            ),
-            ranked AS (
-              SELECT
-                rb.*,
-                greatest(
-                  0.0,
-                  rb.score
-                  + CASE WHEN rb.is_prefix THEN %(tender_prefix_bonus)s ELSE 0.0 END
-                  - greatest(rb.si_words - rb.q_words, 0)
-                    * CASE
-                        WHEN rb.q_words <= 1 THEN %(tender_extra_word_penalty_one)s
-                        ELSE %(tender_extra_word_penalty_multi)s
-                      END
-                  - CASE
-                      WHEN rb.core_nonempty
-                       AND rb.q_words <= 1
-                       AND greatest(rb.si_words - rb.q_words, 0) >= 2
-                       AND NOT rb.is_prefix
-                      THEN %(tender_extra_word_nonprefix_penalty)s
-                      ELSE 0.0
-                    END
-                ) AS score_adj
-              FROM ranked_base rb
-            ),
-            filtered AS (
-              SELECT
-                ranked.*,
-                CASE WHEN ranked.mode='fts' THEN ranked.rank + ranked.score_adj ELSE ranked.score_adj END AS match_quality,
-                CASE
-                  WHEN query.tender_qty IS NOT NULL AND ranked.price_per_unit IS NOT NULL
-                    THEN ranked.price_per_unit * query.tender_qty
-                  WHEN query.tender_qty IS NOT NULL
-                    AND ranked.base_qty IS NOT NULL
-                    AND ranked.base_qty > 0
-                    AND ranked.price IS NOT NULL
-                    THEN CEIL(query.tender_qty / ranked.base_qty) * ranked.price
-                  ELSE NULL
-                END AS total_cost,
-                CASE WHEN ranked.score_adj >= %(min_score)s THEN 1 ELSE 0 END AS pass_score
-              FROM ranked, query
-              WHERE
-                (ranked.rank >= %(min_rank)s OR ranked.score_adj >= %(min_score)s)
-            ),
-            scored AS (
-              SELECT
-                filtered.*,
-                max(match_quality) OVER (
-                  PARTITION BY query_item_id, supplier_id, freshness_match, unit_match, pass_score
-                ) AS best_quality
-              FROM filtered
-            ),
-            ordered AS (
-              SELECT
-                scored.*,
-                (best_quality - match_quality) AS quality_gap,
-                CASE
-                  WHEN scored.is_pinned IS TRUE THEN FALSE
-                  WHEN best_quality IS NULL THEN FALSE
-                  WHEN best_quality - match_quality
-                    <= greatest(%(tender_text_tie_abs_eps)s, best_quality * %(tender_text_tie_rel_eps)s)
-                  THEN TRUE
-                  ELSE FALSE
-                END AS is_text_tie
-              FROM scored
-            )
-            SELECT *
-            FROM ordered
-            ORDER BY is_star_exact DESC,
-                     freshness_match DESC,
-                     unit_match DESC,
-                     pass_score DESC,
-                     match_quality DESC,
-                     is_text_tie DESC,
-                     CASE WHEN is_text_tie THEN total_cost END ASC NULLS LAST,
-                     CASE WHEN is_text_tie THEN price_per_unit END ASC NULLS LAST,
-                     supplier_item_id DESC
+            {fuzzy_block}
+            SELECT
+              chosen.*,
+              NULL::float AS rank,
+              chosen.score::float AS score_adj,
+              NULL::int AS unit_match
+            FROM chosen
+            ORDER BY
+              {order_clause}
             LIMIT %(limit)s
         """
 
@@ -906,6 +1018,19 @@ def create_app() -> Flask:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
                 """
+                SELECT supplier_item_id
+                FROM tender_offers
+                WHERE tender_item_id=%s
+                  AND offer_type IN ('selected', 'final')
+                  AND supplier_item_id IS NOT NULL;
+                """,
+                (tender_item_id,),
+            )
+            protected_ids = {
+                row["supplier_item_id"] for row in cur.fetchall() if row.get("supplier_item_id")
+            }
+            cur.execute(
+                """
                 SELECT id, name_input, category_id
                 FROM tender_items
                 WHERE id=%s AND project_id=%s;
@@ -953,6 +1078,8 @@ def create_app() -> Flask:
                 for alt in cur.fetchall():
                     if alt["supplier_item_id"] == selected_supplier_item_id:
                         continue
+                    if alt["supplier_item_id"] in protected_ids:
+                        continue
                     snap_alt = {
                         **_snapshot_offer(alt, alt["supplier_name"], item.get("category_id")),
                         "supplier_item_id": alt.get("supplier_item_id"),
@@ -960,15 +1087,18 @@ def create_app() -> Flask:
                     }
                     cur.execute(
                         """
-                        SELECT id
+                        SELECT id, offer_type
                         FROM tender_offers
                         WHERE tender_item_id=%s AND supplier_item_id=%s
+                        ORDER BY id DESC
                         LIMIT 1;
                         """,
                         (tender_item_id, alt["supplier_item_id"]),
                     )
                     existing_alt = cur.fetchone()
-                    if existing_alt:
+                    if existing_alt and existing_alt.get("offer_type") in ("selected", "final"):
+                        continue
+                    if existing_alt and existing_alt.get("offer_type") == "alternative":
                         cur.execute(
                             """
                             UPDATE tender_offers
@@ -1020,6 +1150,7 @@ def create_app() -> Flask:
                     rows = cur.fetchall()
             return jsonify({"projects": [dict(r) for r in rows]})
         except Exception as e:
+            app.logger.exception("tender matrix failed")
             return jsonify({"error": "internal error", "details": str(e)}), 500
 
     @app.route("/api/tenders", methods=["POST"])
@@ -1036,6 +1167,7 @@ def create_app() -> Flask:
                     conn.commit()
                     with db_connect() as conn2:
                         proj = _load_project(conn2, pid)
+                    proj = _json_safe(proj)
                     return jsonify({"project": proj})
 
                 with conn.cursor() as cur:
@@ -1046,6 +1178,7 @@ def create_app() -> Flask:
 
                 with db_connect() as conn2:
                     proj = _load_project(conn2, pid)
+                proj = _json_safe(proj)
                 return jsonify({"project": proj})
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
@@ -1071,6 +1204,7 @@ def create_app() -> Flask:
                 conn.commit()
             with db_connect() as conn2:
                 proj = _load_project(conn2, project_id)
+            proj = _json_safe(proj)
             return jsonify({"project": proj, "inserted": inserted})
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
@@ -1088,14 +1222,10 @@ def create_app() -> Flask:
                 proj = _load_project(conn, project_id)
             if not proj:
                 return jsonify({"error": "not found"}), 404
-            proj["items"] = [
-                {k: _json_safe(v) for k, v in it.items()} if isinstance(it, dict) else it for it in proj.get("items", [])
-            ]
-            for it in proj.get("items", []):
-                if isinstance(it, dict) and "offers" in it:
-                    it["offers"] = [{k: _json_safe(v) for k, v in off.items()} for off in it["offers"]]
+            proj = _json_safe(proj)
             return jsonify({"project": proj})
         except Exception as e:
+            app.logger.exception("tender matrix failed")
             return jsonify({"error": "internal error", "details": str(e)}), 500
 
     @app.route("/api/tenders/<int:project_id>/items", methods=["POST"])
@@ -1112,6 +1242,8 @@ def create_app() -> Flask:
                 qty_val = float(str(qty_raw).replace(",", "."))
             except Exception:
                 return jsonify({"error": "qty must be numeric"}), 400
+            if not math.isfinite(qty_val):
+                return jsonify({"error": "qty must be finite"}), 400
 
         unit_input = str(data.get("unit_input") or "").strip() or None
 
@@ -1271,15 +1403,10 @@ def create_app() -> Flask:
 
                     default_search = normalize_base(generate_search_name(item["name_input"]) or "")
                     name_raw = supplier_item.get("name_raw") or ""
-                    unit_raw = supplier_item.get("unit") or ""
-                    if re.search(r"\d+(?:[\.,]\d+)?\s*(кг|г|гр|л|мл)\b", name_raw, re.IGNORECASE):
-                        supplier_text = name_raw.strip()
-                    else:
-                        supplier_text = f"{name_raw} {unit_raw}".strip()
-                    target_search = normalize_base(supplier_text)
+                    target_search = _build_star_search_name(name_raw)
                     if item.get("star_supplier_item_id") == supplier_item_id:
                         next_star_id = None
-                        next_search = default_search
+                        next_search = None
                     else:
                         next_star_id = supplier_item_id
                         next_search = target_search
@@ -1379,6 +1506,7 @@ def create_app() -> Flask:
     @app.route("/api/tenders/<int:project_id>/matrix", methods=["GET"])
     def api_tenders_matrix(project_id: int):
         supplier_ids_raw = (request.args.get("supplier_ids") or "").strip()
+        split_raw = (request.args.get("split") or "").strip().lower()
         min_score_raw = request.args.get("min_score")
         min_rank_raw = request.args.get("min_rank")
         fts_candidates_raw = request.args.get("fts_candidates")
@@ -1408,9 +1536,13 @@ def create_app() -> Flask:
         if not supplier_ids:
             return jsonify({"matrix": {}})
         try:
+            # по умолчанию дробим при 3+ поставщиках, либо если явно split=1/true
+            split = split_raw in ("1", "true", "yes", "on") or (len(supplier_ids) > 2)
+            matrix_timeout_ms = int(os.getenv("TENDER_MATRIX_TIMEOUT_MS", "60000"))
             with db_connect() as conn:
                 ensure_schema_compare(conn)
                 with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                    cur.execute("SET LOCAL statement_timeout = %s;", (matrix_timeout_ms,))
                     cur.execute(
                         """
                         SELECT id, name_input, search_name, qty, unit_input, category_id, star_supplier_item_id
@@ -1430,6 +1562,10 @@ def create_app() -> Flask:
                     q_likes = []
                     prefer_freshes = []
                     prefer_frozens = []
+                    avoid_frozens = []
+                    require_frozens = []
+                    avoid_processeds = []
+                    anchor_terms_texts = []
                     category_ids = []
                     qtys = []
                     want_base_units = []
@@ -1445,6 +1581,10 @@ def create_app() -> Flask:
                         q_likes.append(info["q_like"])
                         prefer_freshes.append(info["prefer_fresh"])
                         prefer_frozens.append(info["prefer_frozen"])
+                        avoid_frozens.append(info["avoid_frozen"])
+                        require_frozens.append(info["require_frozen"])
+                        avoid_processeds.append(info["avoid_processed"])
+                        anchor_terms_texts.append(" ".join(info.get("anchor_terms") or []))
                         category_ids.append(item.get("category_id"))
                         qtys.append(item.get("qty"))
                         want_base_units.append(info["want_base_unit"])
@@ -1462,15 +1602,22 @@ def create_app() -> Flask:
                           ti.q_like AS q_like,
                           ti.prefer_fresh AS prefer_fresh,
                           ti.prefer_frozen AS prefer_frozen,
+                          ti.avoid_frozen AS avoid_frozen,
+                          ti.require_frozen AS require_frozen,
+                          ti.avoid_processed AS avoid_processed,
+                          CASE
+                            WHEN nullif(btrim(ti.anchor_terms_text), '') IS NULL THEN NULL
+                            ELSE regexp_split_to_array(ti.anchor_terms_text, '\s+')
+                          END AS anchor_terms,
                           ti.category_id AS category_id,
                           ti.want_base_unit AS want_base_unit,
                           ti.want_base_qty AS want_base_qty,
                           ti.qty AS tender_qty,
                           sup.supplier_id AS supplier_id,
                           ti.is_pinned AS is_pinned,
-                          ti.star_supplier_item_id AS star_supplier_item_id,
-                          {_tsquery_sql("ti.q_text_core")} AS tsq
-                        """
+                          ti.star_supplier_item_id AS star_supplier_item_id
+                        """,
+                        matrix_mode=True,
                     )
 
                     sql = f"""
@@ -1487,6 +1634,10 @@ def create_app() -> Flask:
                             %(q_likes)s::text[],
                             %(prefer_freshes)s::int[],
                             %(prefer_frozens)s::int[],
+                            %(avoid_frozens)s::int[],
+                            %(require_frozens)s::int[],
+                            %(avoid_processeds)s::int[],
+                            %(anchor_terms_texts)s::text[],
                             %(category_ids)s::int[],
                             %(qtys)s::numeric[],
                             %(want_base_units)s::text[],
@@ -1501,6 +1652,10 @@ def create_app() -> Flask:
                             q_like,
                             prefer_fresh,
                             prefer_frozen,
+                            avoid_frozen,
+                            require_frozen,
+                            avoid_processed,
+                            anchor_terms_text,
                             category_id,
                             qty,
                             want_base_unit,
@@ -1530,37 +1685,51 @@ def create_app() -> Flask:
                           {candidate_sql}
                         ) si ON TRUE;
                     """
-                    cur.execute(
-                        sql,
-                        {
-                            "supplier_ids": supplier_ids,
-                            "tender_item_ids": tender_item_ids,
-                            "q_text_fulls": q_text_fulls,
-                            "q_text_cores": q_text_cores,
-                            "q_filters": q_filters,
-                            "q_likes": q_likes,
-                            "prefer_freshes": prefer_freshes,
-                            "prefer_frozens": prefer_frozens,
-                            "category_ids": category_ids,
-                            "qtys": qtys,
-                            "want_base_units": want_base_units,
-                            "want_base_qtys": want_base_qtys,
-                            "is_pinneds": is_pinneds,
-                            "star_supplier_item_ids": star_supplier_item_ids,
-                            "min_score": min_score,
-                            "min_rank": min_rank,
-                            "fts_candidates": fts_candidates,
-                            "trgm_candidates": trgm_candidates,
-                            "tender_text_tie_abs_eps": TENDER_TEXT_TIE_ABS_EPS,
-                            "tender_text_tie_rel_eps": TENDER_TEXT_TIE_REL_EPS,
-                            "tender_prefix_bonus": TENDER_PREFIX_BONUS,
-                            "tender_extra_word_penalty_one": TENDER_EXTRA_WORD_PENALTY_ONE,
-                            "tender_extra_word_penalty_multi": TENDER_EXTRA_WORD_PENALTY_MULTI,
-                            "tender_extra_word_nonprefix_penalty": TENDER_EXTRA_WORD_NONPREFIX_PENALTY,
-                            "limit": 1,
-                        },
-                    )
-                    rows = cur.fetchall()
+                    base_params = {
+                        "tender_item_ids": tender_item_ids,
+                        "q_text_fulls": q_text_fulls,
+                        "q_text_cores": q_text_cores,
+                        "q_filters": q_filters,
+                        "q_likes": q_likes,
+                        "prefer_freshes": prefer_freshes,
+                        "prefer_frozens": prefer_frozens,
+                        "avoid_frozens": avoid_frozens,
+                        "require_frozens": require_frozens,
+                        "avoid_processeds": avoid_processeds,
+                        "anchor_terms_texts": anchor_terms_texts,
+                        "category_ids": category_ids,
+                        "qtys": qtys,
+                        "want_base_units": want_base_units,
+                        "want_base_qtys": want_base_qtys,
+                        "is_pinneds": is_pinneds,
+                        "star_supplier_item_ids": star_supplier_item_ids,
+                        "min_score": min_score,
+                        "min_rank": min_rank,
+                        "fts_candidates": fts_candidates,
+                        "trgm_candidates": trgm_candidates,
+                        "processed_re": "(марин|маринад|консерв|солен|рассол|в\\s+рассоле|квашен|резан|нарез)",
+                        "frozen_re": "(с/м|с\\s*/\\s*м|замор|заморож|frozen|мороз)",
+                        "tender_text_tie_abs_eps": TENDER_TEXT_TIE_ABS_EPS,
+                        "tender_text_tie_rel_eps": TENDER_TEXT_TIE_REL_EPS,
+                        "tender_prefix_bonus": TENDER_PREFIX_BONUS,
+                        "tender_extra_word_penalty_one": TENDER_EXTRA_WORD_PENALTY_ONE,
+                        "tender_extra_word_penalty_multi": TENDER_EXTRA_WORD_PENALTY_MULTI,
+                        "tender_extra_word_nonprefix_penalty": TENDER_EXTRA_WORD_NONPREFIX_PENALTY,
+                        "limit": 1,
+                    }
+
+                    rows = []
+                    if split:
+                        for sid in supplier_ids:
+                            params = dict(base_params)
+                            params["supplier_ids"] = [sid]
+                            cur.execute(sql, params)
+                            rows.extend(cur.fetchall())
+                    else:
+                        params = dict(base_params)
+                        params["supplier_ids"] = supplier_ids
+                        cur.execute(sql, params)
+                        rows = cur.fetchall()
             matrix: Dict[str, Dict[str, Dict[str, Any]]] = {}
             for row in rows:
                 if row["supplier_item_id"] is None:
@@ -1682,8 +1851,14 @@ def create_app() -> Flask:
                     snap["score"] = _scalar(cur.fetchone(), "score")
 
                     cur.execute(
-                        "SELECT id FROM tender_offers WHERE tender_item_id=%s AND supplier_item_id=%s LIMIT 1;",
-                        (tender_item_id, supplier_item_id),
+                        """
+                        SELECT id
+                        FROM tender_offers
+                        WHERE tender_item_id=%s AND supplier_id=%s AND offer_type='selected'
+                        ORDER BY id DESC
+                        LIMIT 1;
+                        """,
+                        (tender_item_id, base["supplier_id"]),
                     )
                     existing_selected = cur.fetchone()
 
@@ -1692,7 +1867,8 @@ def create_app() -> Flask:
                             """
                             UPDATE tender_offers
                             SET offer_type='selected', supplier_id=%(supplier_id)s, supplier_name=%(supplier_name)s,
-                                name_raw=%(name_raw)s, unit=%(unit)s, price=%(price)s, base_unit=%(base_unit)s,
+                                supplier_item_id=%(supplier_item_id)s, name_raw=%(name_raw)s, unit=%(unit)s,
+                                price=%(price)s, base_unit=%(base_unit)s,
                                 base_qty=%(base_qty)s, price_per_unit=%(price_per_unit)s, category_id=%(category_id)s,
                                 score=%(score)s
                             WHERE id=%(id)s
@@ -1712,7 +1888,23 @@ def create_app() -> Flask:
                             {"item_id": tender_item_id, **snap},
                         )
                     selected_id = _scalar(cur.fetchone(), "id")
-                    _rebuild_offers_for_item(conn, tender_item_id, item["project_id"], supplier_item_id)
+
+                    cur.execute(
+                        """
+                        UPDATE tender_offers
+                        SET offer_type='alternative'
+                        WHERE tender_item_id=%s
+                          AND supplier_id=%s
+                          AND offer_type='selected'
+                          AND id <> %s;
+                        """,
+                        (tender_item_id, base["supplier_id"], selected_id),
+                    )
+
+                    if add_to_cart:
+                        _rebuild_offers_for_item(
+                            conn, tender_item_id, item["project_id"], supplier_item_id
+                        )
 
                     if add_to_cart:
                         cur.execute(
@@ -1878,14 +2070,17 @@ def create_app() -> Flask:
                           %(q_like)s::text AS q_like,
                           %(prefer_fresh)s::int AS prefer_fresh,
                           %(prefer_frozen)s::int AS prefer_frozen,
+                          %(avoid_frozen)s::int AS avoid_frozen,
+                          %(require_frozen)s::int AS require_frozen,
+                          %(avoid_processed)s::int AS avoid_processed,
+                          %(anchor_terms)s::text[] AS anchor_terms,
                           %(category_id)s::int AS category_id,
                           %(want_base_unit)s::text AS want_base_unit,
                           %(want_base_qty)s::numeric AS want_base_qty,
                           %(tender_qty)s::numeric AS tender_qty,
                           %(supplier_id)s::int AS supplier_id,
                           %(is_pinned)s::bool AS is_pinned,
-                          %(star_supplier_item_id)s::int AS star_supplier_item_id,
-                          {_tsquery_sql("%(q_text_core)s::text")} AS tsq
+                          %(star_supplier_item_id)s::int AS star_supplier_item_id
                         """
                     )
                     cur.execute(
@@ -1900,6 +2095,10 @@ def create_app() -> Flask:
                             "q_like": query_info["q_like"],
                             "prefer_fresh": query_info["prefer_fresh"],
                             "prefer_frozen": query_info["prefer_frozen"],
+                            "avoid_frozen": query_info["avoid_frozen"],
+                            "require_frozen": query_info["require_frozen"],
+                            "avoid_processed": query_info["avoid_processed"],
+                            "anchor_terms": query_info["anchor_terms"],
                             "want_base_unit": query_info["want_base_unit"],
                             "want_base_qty": query_info["want_base_qty"],
                             "tender_qty": item.get("qty"),
@@ -1908,6 +2107,8 @@ def create_app() -> Flask:
                             "min_rank": min_rank,
                             "fts_candidates": fts_candidates,
                             "trgm_candidates": trgm_candidates,
+                            "processed_re": "(марин|маринад|консерв|солен|рассол|в\\s+рассоле|квашен|резан|нарез)",
+                            "frozen_re": "(с/м|с\\s*/\\s*м|замор|заморож|frozen|мороз)",
                             "tender_text_tie_abs_eps": TENDER_TEXT_TIE_ABS_EPS,
                             "tender_text_tie_rel_eps": TENDER_TEXT_TIE_REL_EPS,
                             "tender_prefix_bonus": TENDER_PREFIX_BONUS,

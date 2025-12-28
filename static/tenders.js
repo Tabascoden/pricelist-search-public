@@ -67,13 +67,29 @@
 
   async function apiJson(url, opts = {}) {
     const r = await fetch(url, opts);
+    const contentType = r.headers.get("content-type") || "";
     let j = null;
-    try { j = await r.json(); } catch { /* ignore */ }
+    let parsed = false;
+    try {
+      j = await r.json();
+      parsed = true;
+    } catch {
+      parsed = false;
+    }
     if (!r.ok) {
-      const msg = (j && (j.error || j.details)) ? `${j.error || "error"}: ${j.details || ""}` : `HTTP ${r.status}`;
+      const msg = (parsed && j && (j.error || j.details))
+        ? `${j.error || "error"}: ${j.details || ""}`
+        : `HTTP ${r.status}`;
       const e = new Error(msg);
       e.status = r.status;
-      e.payload = j;
+      if (parsed) {
+        e.payload = j;
+      }
+      throw e;
+    }
+    if (!parsed) {
+      const e = new Error(`API returned non-JSON (status=${r.status}, content-type=${contentType || "unknown"})`);
+      e.status = r.status;
       throw e;
     }
     return j;
@@ -127,6 +143,19 @@
     return { totalPrice, packsNeeded };
   }
 
+  function getEffectivePrice(match) {
+    if (!match) return { effectivePrice: null, usesPpu: false };
+    const ppu = match.price_per_unit != null ? Number(match.price_per_unit) : null;
+    if (Number.isFinite(ppu)) {
+      return { effectivePrice: ppu, usesPpu: true };
+    }
+    const price = match.price != null ? Number(match.price) : null;
+    if (Number.isFinite(price)) {
+      return { effectivePrice: price, usesPpu: false };
+    }
+    return { effectivePrice: null, usesPpu: false };
+  }
+
   function getSupplierName(supplierId) {
     const s = state.suppliers.find(x => Number(x.id) === Number(supplierId));
     return s ? (s.name || `Поставщик #${supplierId}`) : `Поставщик #${supplierId}`;
@@ -142,6 +171,27 @@
     return !!state.blocked?.[`${itemId}:${supplierId}`];
   }
 
+  let tenderGridListenersBound = false;
+  let tenderGridRaf = 0;
+  function ensureTenderGridMaxHeight() {
+    if (tenderGridRaf) return;
+    tenderGridRaf = requestAnimationFrame(() => {
+      tenderGridRaf = 0;
+      const grid = $("#tenders-grid");
+      if (!grid || grid.offsetParent === null) return;
+      const rect = grid.getBoundingClientRect();
+      const available = window.innerHeight - rect.top - 24;
+      if (!Number.isFinite(available)) return;
+      grid.style.maxHeight = `${Math.max(160, Math.floor(available))}px`;
+    });
+  }
+
+  function bindTenderGridMaxHeight() {
+    if (tenderGridListenersBound) return;
+    tenderGridListenersBound = true;
+    window.addEventListener("resize", ensureTenderGridMaxHeight);
+  }
+
   // ---------- data loading ----------
   async function loadProjects() {
     const j = await apiJson("/api/tenders");
@@ -155,7 +205,10 @@
 
   async function loadProject(projectId) {
     const j = await apiJson(`/api/tenders/${projectId}`);
-    state.project = j.project || null;
+    if (!j || !j.project) {
+      throw new Error("Bad API response: missing project");
+    }
+    state.project = j.project;
   }
 
   async function loadSelectedSuppliers(projectId) {
@@ -189,7 +242,9 @@
     if (!ids.length) return;
 
     try {
-      const qs = `supplier_ids=${encodeURIComponent(ids.join(","))}&min_score=0`;
+  const qs = `supplier_ids=${encodeURIComponent(ids.join(","))}`
+    + `&min_score=${encodeURIComponent(MIN_SCORE)}`
+    + `&fts_candidates=80&trgm_candidates=80&split=1`;
       const j = await apiJson(`/api/tenders/${projectId}/matrix?${qs}`);
       state.matrix = j.matrix || {};
     } catch (e) {
@@ -570,6 +625,8 @@
     renderSelectedSuppliersChipline();
     renderProjectTable();
     renderCart();
+    ensureTenderGridMaxHeight();
+    bindTenderGridMaxHeight();
   }
 
   function renderProjectTable() {
@@ -580,8 +637,8 @@
     const thead = `
       <thead>
         <tr>
-          <th style="width:70px;">№</th>
-          <th style="min-width:130px;">Номенклатура</th>
+          <th class="sticky-col-1" style="width:70px;">№</th>
+          <th class="sticky-col-2" style="min-width:130px;">Номенклатура</th>
           <th style="width:70px;">Кол-во</th>
           <th style="width:90px;">Ед.</th>
           ${supplierIds.map(id => `<th class="supplierTh">${esc(getSupplierName(id))}</th>`).join("")}
@@ -590,7 +647,7 @@
     `;
 
     const tbody = items.map(it => {
-      // найти минимальную цену по строке (по totalPrice)
+      // найти минимальную цену по строке (effective_price)
       const candidates = supplierIds
         .map(sid => {
           const selectedForSupplier = (it.offers || []).find(
@@ -599,18 +656,21 @@
           const m = selectedForSupplier || getMatch(it.id, sid);
           if (!m) return null;
           const score = Number(m.score);
-          if (!Number.isFinite(score) || score < MIN_SCORE) return null;
+          if (!selectedForSupplier && (!Number.isFinite(score) || score < MIN_SCORE)) return null;
           if (isBlocked(it.id, sid)) return null;
-          const { totalPrice } = calcTotals(m, it.qty);
-          return { sid, totalPrice };
+          const { effectivePrice, usesPpu } = getEffectivePrice(m);
+          if (!Number.isFinite(effectivePrice)) return null;
+          return { sid, effectivePrice, hasPpu: usesPpu };
         })
         .filter(Boolean)
-        .filter(x => Number.isFinite(x.totalPrice));
+        .filter(x => Number.isFinite(x.effectivePrice));
 
       let bestSid = null;
+      let bestUsesPpu = false;
       if (candidates.length) {
-        candidates.sort((a, b) => a.totalPrice - b.totalPrice);
+        candidates.sort((a, b) => a.effectivePrice - b.effectivePrice);
         bestSid = candidates[0].sid;
+        bestUsesPpu = candidates[0].hasPpu;
       }
 
       const selectedOfferId = it.selected_offer_id ? Number(it.selected_offer_id) : null;
@@ -654,8 +714,10 @@
           `;
         }
 
-        const { totalPrice } = calcTotals(m, it.qty);
         const supplierPrice = m.price;
+        const bestNote = (!picked && bestSid === sid)
+          ? (bestUsesPpu ? "по цене/ед" : "по цене (цена/ед не указана)")
+          : "";
         const cls = [
           "supplierCell",
           picked ? "picked" : "",
@@ -676,6 +738,7 @@
               <div class="supPrice">${esc(fmtMoney(supplierPrice))}</div>
               <div class="supScore">цена/ед: ${esc(fmtMoney(m.price_per_unit ?? m.price))}</div>
             </div>
+            ${bestNote ? `<div class="supScore">выгодно: ${esc(bestNote)}</div>` : ""}
             <div class="iconRow">
               <button class="iconBtn" title="Скрыть" data-block="${esc(key)}">✕</button>
               <button class="iconBtn" title="Найти другой" data-find="1" data-item-id="${esc(it.id)}" data-supplier-id="${esc(sid)}">🔍</button>
@@ -689,8 +752,8 @@
       const qtyValue = it.qty != null ? String(it.qty) : "";
       return `
         <tr>
-          <td>${esc(it.row_no ?? "")}</td>
-          <td><b>${esc(it.name_input || "")}</b></td>
+          <td class="sticky-col-1">${esc(it.row_no ?? "")}</td>
+          <td class="sticky-col-2"><b>${esc(it.name_input || "")}</b></td>
           <td>
             <input
               class="input input-qty"
