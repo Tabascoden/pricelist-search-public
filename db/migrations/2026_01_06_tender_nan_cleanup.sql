@@ -1,7 +1,9 @@
+-- Cleanup NaN values from tender items
 UPDATE tender_items
 SET qty = NULL
-WHERE qty <> qty;
+WHERE qty::text = 'NaN';
 
 UPDATE tender_items
 SET unit_input = NULL
-WHERE unit_input IS NOT NULL AND lower(unit_input) = 'nan';
+WHERE unit_input IS NOT NULL
+  AND lower(unit_input) = 'nan';
