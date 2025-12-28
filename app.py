@@ -757,7 +757,6 @@ def create_app() -> Flask:
             fuzzy AS (
               SELECT
                 base.*,
-                base.score,
                 'fuzzy'::text AS mode
               FROM fuzzy_candidates base, query
               WHERE query.q_text_full IS NOT NULL
