@@ -1018,6 +1018,19 @@ def create_app() -> Flask:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
                 """
+                SELECT supplier_item_id
+                FROM tender_offers
+                WHERE tender_item_id=%s
+                  AND offer_type IN ('selected', 'final')
+                  AND supplier_item_id IS NOT NULL;
+                """,
+                (tender_item_id,),
+            )
+            protected_ids = {
+                row["supplier_item_id"] for row in cur.fetchall() if row.get("supplier_item_id")
+            }
+            cur.execute(
+                """
                 SELECT id, name_input, category_id
                 FROM tender_items
                 WHERE id=%s AND project_id=%s;
@@ -1065,6 +1078,8 @@ def create_app() -> Flask:
                 for alt in cur.fetchall():
                     if alt["supplier_item_id"] == selected_supplier_item_id:
                         continue
+                    if alt["supplier_item_id"] in protected_ids:
+                        continue
                     snap_alt = {
                         **_snapshot_offer(alt, alt["supplier_name"], item.get("category_id")),
                         "supplier_item_id": alt.get("supplier_item_id"),
@@ -1072,15 +1087,18 @@ def create_app() -> Flask:
                     }
                     cur.execute(
                         """
-                        SELECT id
+                        SELECT id, offer_type
                         FROM tender_offers
                         WHERE tender_item_id=%s AND supplier_item_id=%s
+                        ORDER BY id DESC
                         LIMIT 1;
                         """,
                         (tender_item_id, alt["supplier_item_id"]),
                     )
                     existing_alt = cur.fetchone()
-                    if existing_alt:
+                    if existing_alt and existing_alt.get("offer_type") in ("selected", "final"):
+                        continue
+                    if existing_alt and existing_alt.get("offer_type") == "alternative":
                         cur.execute(
                             """
                             UPDATE tender_offers
@@ -1833,8 +1851,14 @@ def create_app() -> Flask:
                     snap["score"] = _scalar(cur.fetchone(), "score")
 
                     cur.execute(
-                        "SELECT id FROM tender_offers WHERE tender_item_id=%s AND supplier_item_id=%s LIMIT 1;",
-                        (tender_item_id, supplier_item_id),
+                        """
+                        SELECT id
+                        FROM tender_offers
+                        WHERE tender_item_id=%s AND supplier_id=%s AND offer_type='selected'
+                        ORDER BY id DESC
+                        LIMIT 1;
+                        """,
+                        (tender_item_id, base["supplier_id"]),
                     )
                     existing_selected = cur.fetchone()
 
@@ -1843,7 +1867,8 @@ def create_app() -> Flask:
                             """
                             UPDATE tender_offers
                             SET offer_type='selected', supplier_id=%(supplier_id)s, supplier_name=%(supplier_name)s,
-                                name_raw=%(name_raw)s, unit=%(unit)s, price=%(price)s, base_unit=%(base_unit)s,
+                                supplier_item_id=%(supplier_item_id)s, name_raw=%(name_raw)s, unit=%(unit)s,
+                                price=%(price)s, base_unit=%(base_unit)s,
                                 base_qty=%(base_qty)s, price_per_unit=%(price_per_unit)s, category_id=%(category_id)s,
                                 score=%(score)s
                             WHERE id=%(id)s
@@ -1863,7 +1888,23 @@ def create_app() -> Flask:
                             {"item_id": tender_item_id, **snap},
                         )
                     selected_id = _scalar(cur.fetchone(), "id")
-                    _rebuild_offers_for_item(conn, tender_item_id, item["project_id"], supplier_item_id)
+
+                    cur.execute(
+                        """
+                        UPDATE tender_offers
+                        SET offer_type='alternative'
+                        WHERE tender_item_id=%s
+                          AND supplier_id=%s
+                          AND offer_type='selected'
+                          AND id <> %s;
+                        """,
+                        (tender_item_id, base["supplier_id"], selected_id),
+                    )
+
+                    if add_to_cart:
+                        _rebuild_offers_for_item(
+                            conn, tender_item_id, item["project_id"], supplier_item_id
+                        )
 
                     if add_to_cart:
                         cur.execute(
