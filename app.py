@@ -714,7 +714,7 @@ def create_app() -> Flask:
                 AND array_length(query.anchor_terms, 1) > 0
                 AND (
                   SELECT bool_and(
-                    ({search_expr} ILIKE '%' || term || '%' OR base.name_raw ILIKE '%' || term || '%')
+                    ({search_expr} ILIKE '%%' || term || '%%' OR base.name_raw ILIKE '%%' || term || '%%')
                   )
                   FROM unnest(query.anchor_terms) AS term
                 )
@@ -743,12 +743,12 @@ def create_app() -> Flask:
                   OR EXISTS (
                     SELECT 1
                     FROM unnest(query.anchor_terms) AS term
-                    WHERE ({search_expr} ILIKE '%' || term || '%' OR base.name_raw ILIKE '%' || term || '%')
+                    WHERE ({search_expr} ILIKE '%%' || term || '%%' OR base.name_raw ILIKE '%%' || term || '%%')
                   )
                 )
                 AND (
-                  (base.name_search IS NOT NULL AND base.name_search % query.q_text_full)
-                  OR (base.name_search IS NULL AND base.name_raw % query.q_text_full)
+                  (base.name_search IS NOT NULL AND base.name_search %% query.q_text_full)
+                  OR (base.name_search IS NULL AND base.name_raw %% query.q_text_full)
                 )
               ORDER BY
                 score DESC
@@ -1050,6 +1050,7 @@ def create_app() -> Flask:
                     rows = cur.fetchall()
             return jsonify({"projects": [dict(r) for r in rows]})
         except Exception as e:
+            app.logger.exception("tender matrix failed")
             return jsonify({"error": "internal error", "details": str(e)}), 500
 
     @app.route("/api/tenders", methods=["POST"])
@@ -1124,6 +1125,7 @@ def create_app() -> Flask:
             proj = _json_safe(proj)
             return jsonify({"project": proj})
         except Exception as e:
+            app.logger.exception("tender matrix failed")
             return jsonify({"error": "internal error", "details": str(e)}), 500
 
     @app.route("/api/tenders/<int:project_id>/items", methods=["POST"])
