@@ -581,10 +581,7 @@ def create_app() -> Flask:
         "охл",
         "охлажд",
         "замор",
-        "заморож",
-        "мороз",
         "марин",
-        "маринад",
         "консерв",
         "солен",
         "рассол",
@@ -678,7 +675,8 @@ def create_app() -> Flask:
         }
 
     def _tender_candidates_sql(query_source: str) -> str:
-        score_expr = "greatest(similarity(base.name_search, query.q_text_full), word_similarity(query.q_text_full, base.name_search))"
+        search_expr = "coalesce(base.name_search, base.name_raw)"
+        score_expr = f"greatest(similarity({search_expr}, query.q_text_full), word_similarity(query.q_text_full, {search_expr}))"
         return f"""
             WITH query AS (
               {query_source}
@@ -688,7 +686,7 @@ def create_app() -> Flask:
                 si.id AS supplier_item_id,
                 si.supplier_id,
                 si.name_raw,
-                coalesce(si.name_search, si.name_raw) AS name_search,
+                si.name_search AS name_search,
                 si.unit,
                 si.price,
                 si.base_unit,
@@ -716,7 +714,7 @@ def create_app() -> Flask:
                 AND array_length(query.anchor_terms, 1) > 0
                 AND (
                   SELECT bool_and(
-                    (base.name_search ILIKE '%' || term || '%' OR base.name_raw ILIKE '%' || term || '%')
+                    ({search_expr} ILIKE '%' || term || '%' OR base.name_raw ILIKE '%' || term || '%')
                   )
                   FROM unnest(query.anchor_terms) AS term
                 )
@@ -727,11 +725,10 @@ def create_app() -> Flask:
                 base.supplier_item_id DESC
               LIMIT %(limit)s
             ),
-            fuzzy AS (
+            fuzzy_candidates AS (
               SELECT
                 base.*,
-                {score_expr} AS score,
-                'fuzzy'::text AS mode
+                {score_expr} AS score
               FROM base, query
               WHERE query.q_text_full IS NOT NULL
                 AND length(trim(query.q_text_full)) > 0
@@ -740,7 +737,32 @@ def create_app() -> Flask:
                   OR array_length(query.anchor_terms, 1) = 0
                   OR NOT EXISTS (SELECT 1 FROM strict)
                 )
-                AND {score_expr} >= %(min_score)s
+                AND (
+                  query.anchor_terms IS NULL
+                  OR array_length(query.anchor_terms, 1) = 0
+                  OR EXISTS (
+                    SELECT 1
+                    FROM unnest(query.anchor_terms) AS term
+                    WHERE ({search_expr} ILIKE '%' || term || '%' OR base.name_raw ILIKE '%' || term || '%')
+                  )
+                )
+                AND (
+                  (base.name_search IS NOT NULL AND base.name_search % query.q_text_full)
+                  OR (base.name_search IS NULL AND base.name_raw % query.q_text_full)
+                )
+              ORDER BY
+                score DESC
+              LIMIT %(trgm_candidates)s
+            ),
+            fuzzy AS (
+              SELECT
+                base.*,
+                base.score,
+                'fuzzy'::text AS mode
+              FROM fuzzy_candidates base, query
+              WHERE query.q_text_full IS NOT NULL
+                AND length(trim(query.q_text_full)) > 0
+                AND base.score >= %(min_score)s
               ORDER BY
                 score DESC,
                 (base.price_per_unit IS NULL) ASC,

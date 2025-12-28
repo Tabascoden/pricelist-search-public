@@ -143,6 +143,19 @@
     return { totalPrice, packsNeeded };
   }
 
+  function getEffectivePrice(match) {
+    if (!match) return { effectivePrice: null, usesPpu: false };
+    const ppu = match.price_per_unit != null ? Number(match.price_per_unit) : null;
+    if (Number.isFinite(ppu)) {
+      return { effectivePrice: ppu, usesPpu: true };
+    }
+    const price = match.price != null ? Number(match.price) : null;
+    if (Number.isFinite(price)) {
+      return { effectivePrice: price, usesPpu: false };
+    }
+    return { effectivePrice: null, usesPpu: false };
+  }
+
   function getSupplierName(supplierId) {
     const s = state.suppliers.find(x => Number(x.id) === Number(supplierId));
     return s ? (s.name || `Поставщик #${supplierId}`) : `Поставщик #${supplierId}`;
@@ -622,11 +635,9 @@
           const score = Number(m.score);
           if (!selectedForSupplier && (!Number.isFinite(score) || score < MIN_SCORE)) return null;
           if (isBlocked(it.id, sid)) return null;
-          const ppu = m.price_per_unit != null ? Number(m.price_per_unit) : null;
-          const price = m.price != null ? Number(m.price) : null;
-          if (!Number.isFinite(ppu) && !Number.isFinite(price)) return null;
-          const effectivePrice = Number.isFinite(ppu) ? ppu : price;
-          return { sid, effectivePrice, hasPpu: Number.isFinite(ppu) };
+          const { effectivePrice, usesPpu } = getEffectivePrice(m);
+          if (!Number.isFinite(effectivePrice)) return null;
+          return { sid, effectivePrice, hasPpu: usesPpu };
         })
         .filter(Boolean)
         .filter(x => Number.isFinite(x.effectivePrice));
