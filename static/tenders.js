@@ -614,8 +614,8 @@
     const thead = `
       <thead>
         <tr>
-          <th style="width:70px;">№</th>
-          <th style="min-width:130px;">Номенклатура</th>
+          <th class="sticky-col sticky-col-1" style="width:70px;">№</th>
+          <th class="sticky-col sticky-col-2" style="min-width:130px;">Номенклатура</th>
           <th style="width:70px;">Кол-во</th>
           <th style="width:90px;">Ед.</th>
           ${supplierIds.map(id => `<th class="supplierTh">${esc(getSupplierName(id))}</th>`).join("")}
@@ -729,8 +729,8 @@
       const qtyValue = it.qty != null ? String(it.qty) : "";
       return `
         <tr>
-          <td>${esc(it.row_no ?? "")}</td>
-          <td><b>${esc(it.name_input || "")}</b></td>
+          <td class="sticky-col sticky-col-1">${esc(it.row_no ?? "")}</td>
+          <td class="sticky-col sticky-col-2"><b>${esc(it.name_input || "")}</b></td>
           <td>
             <input
               class="input input-qty"
