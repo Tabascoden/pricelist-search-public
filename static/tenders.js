@@ -156,6 +156,38 @@
     return { effectivePrice: null, usesPpu: false };
   }
 
+  function normalizeUnitLabel(value) {
+    const raw = String(value || "").trim();
+    if (!raw) return "";
+    const key = raw.toLowerCase();
+    const map = {
+      kg: "кг",
+      g: "г",
+      gr: "г",
+      l: "л",
+      ml: "мл",
+      pcs: "шт",
+      pc: "шт",
+      piece: "шт",
+      pieces: "шт",
+      pack: "уп",
+      pkg: "уп",
+      box: "кор",
+      set: "компл",
+    };
+    return map[key] || raw;
+  }
+
+  function getPriceUnitLabel(match) {
+    if (!match) return "";
+    const baseUnit = String(match.base_unit || "").trim();
+    const unit = String(match.unit || "").trim();
+    if (match.price_per_unit != null) {
+      return normalizeUnitLabel(baseUnit || unit);
+    }
+    return normalizeUnitLabel(unit || baseUnit);
+  }
+
   function getSupplierName(supplierId) {
     const s = state.suppliers.find(x => Number(x.id) === Number(supplierId));
     return s ? (s.name || `Поставщик #${supplierId}`) : `Поставщик #${supplierId}`;
@@ -182,7 +214,8 @@
       const rect = grid.getBoundingClientRect();
       const available = window.innerHeight - rect.top - 24;
       if (!Number.isFinite(available)) return;
-      grid.style.maxHeight = `${Math.max(160, Math.floor(available))}px`;
+      const baseHeight = Math.max(160, Math.floor(available));
+      grid.style.maxHeight = `${baseHeight * 5}px`;
     });
   }
 
@@ -302,7 +335,7 @@
 
     const item = state.project?.items?.find(x => Number(x.id) === Number(itemId));
     $("#tenders-match-title").textContent = `${getSupplierName(supplierId)} — подбор`;
-    $("#tenders-match-sub").textContent = item ? `Нужно: ${item.name_input} (кол-во: ${item.qty ?? "—"} ${item.unit_input ?? ""})` : "";
+    $("#tenders-match-sub").textContent = item ? `Нужно: ${item.name_input} (кол-во: ${item.qty ?? "—"})` : "";
     const searchInput = $("#tenders-match-search");
     if (searchInput) {
       searchInput.value = "";
@@ -355,6 +388,7 @@
     const rows = (state.matchModal.rows || [])
       .map(m => {
         const supplierPrice = m.price;
+        const priceUnitLabel = getPriceUnitLabel(m) || "ед.";
         const starActive = item?.star_supplier_item_id != null
           && Number(item.star_supplier_item_id) === Number(m.supplier_item_id);
         const starClass = starActive ? "btn star-picked" : "btn";
@@ -364,8 +398,9 @@
         return `
           <tr>
             <td>${esc(m.name_raw || "")}</td>
+            <td>${esc(m.unit || "—")}</td>
             <td>${esc(fmtMoney(supplierPrice))}</td>
-            <td>${esc(fmtMoney(m.price_per_unit ?? m.price))}</td>
+            <td>${esc(fmtMoney(m.price_per_unit ?? m.price))} / ${esc(priceUnitLabel)}</td>
             <td>
               <button class="btn primary" data-pick="1" data-supplier-item-id="${esc(m.supplier_item_id)}">Выбрать</button>
               <button class="${starClass}" title="${esc(starTitle)}" data-star="1" data-supplier-item-id="${esc(m.supplier_item_id)}">★</button>
@@ -374,7 +409,7 @@
         `;
       }).join("");
 
-    body.innerHTML = rows || `<tr><td colspan="4" class="tender-hint">Ничего не найдено.</td></tr>`;
+    body.innerHTML = rows || `<tr><td colspan="5" class="tender-hint">Ничего не найдено.</td></tr>`;
 
     // bind picks
     $$("button[data-pick]", body).forEach(btn => {
@@ -472,6 +507,19 @@
     });
   }
 
+  async function addTenderItemsBulkFromText(text, defaultUnit) {
+    const pid = state.project?.id;
+    if (!pid) return;
+    return apiJson(`/api/tenders/${pid}/items/bulk`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        text,
+        default_unit: defaultUnit || null,
+      }),
+    });
+  }
+
   async function clearFromCart(itemId) {
     const pid = state.project?.id;
     if (!pid) return;
@@ -532,10 +580,11 @@
   function renderList() {
     const listBox = $("#tenders-view-list");
     const projectBox = $("#tenders-view-project");
-    listBox.classList.remove("hidden");
-    projectBox.classList.add("hidden");
+    listBox?.classList.remove("hidden");
+    projectBox?.classList.add("hidden");
 
     const tb = $("#tenders-list-body");
+    if (!tb) return;
     tb.innerHTML = (state.projects || []).map(p => {
       const title = p.title || `Тендер #${p.id}`;
       const count = Number.isFinite(Number(p.items_count)) ? Number(p.items_count) : 0;
@@ -600,6 +649,7 @@
 
   function renderSelectedSuppliersChipline() {
     const box = $("#tenders-selected-suppliers");
+    if (!box) return;
     const ids = state.selectedSupplierIds || [];
     if (!ids.length) {
       box.innerHTML = `<div class="tender-legend-title">Поставщики</div><div class="tender-hint">Не выбраны. Нажми «Выбрать поставщиков».</div>`;
@@ -612,15 +662,21 @@
   function renderProject() {
     const listBox = $("#tenders-view-list");
     const projectBox = $("#tenders-view-project");
-    listBox.classList.add("hidden");
-    projectBox.classList.remove("hidden");
+    listBox?.classList.add("hidden");
+    projectBox?.classList.remove("hidden");
 
     const p = state.project;
     if (!p) return;
 
-    $("#tenders-project-title").textContent = `Тендер #${p.id}: ${p.title || ""}`.trim();
-    $("#tenders-project-meta").textContent =
-      `Позиций: ${(p.items || []).length} • Минимальный score для показа: ${MIN_SCORE}`;
+    const titleEl = $("#tenders-project-title");
+    const metaEl = $("#tenders-project-meta");
+    if (titleEl) {
+      titleEl.textContent = `Тендер #${p.id}: ${p.title || ""}`.trim();
+    }
+    if (metaEl) {
+      metaEl.textContent =
+        `Позиций: ${(p.items || []).length} • Минимальный score для показа: ${MIN_SCORE}`;
+    }
 
     renderSelectedSuppliersChipline();
     renderProjectTable();
@@ -631,6 +687,7 @@
 
   function renderProjectTable() {
     const tbl = $("#tenders-project-table");
+    if (!tbl) return;
     const items = state.project?.items || [];
     const supplierIds = (state.selectedSupplierIds || []).map(Number).filter(Number.isFinite);
 
@@ -640,7 +697,6 @@
           <th class="sticky-col-1" style="width:70px;">№</th>
           <th class="sticky-col-2" style="min-width:130px;">Номенклатура</th>
           <th style="width:70px;">Кол-во</th>
-          <th style="width:90px;">Ед.</th>
           ${supplierIds.map(id => `<th class="supplierTh">${esc(getSupplierName(id))}</th>`).join("")}
         </tr>
       </thead>
@@ -715,8 +771,11 @@
         }
 
         const supplierPrice = m.price;
+        const priceUnitLabel = getPriceUnitLabel(m);
         const bestNote = (!picked && bestSid === sid)
-          ? (bestUsesPpu ? "по цене/ед" : "по цене (цена/ед не указана)")
+          ? (priceUnitLabel
+              ? `по цене/${priceUnitLabel}`
+              : (bestUsesPpu ? "по цене/ед" : "по цене"))
           : "";
         const cls = [
           "supplierCell",
@@ -736,7 +795,8 @@
             <div class="supName">${esc(m.name_raw || "")}</div>
             <div class="supMeta">
               <div class="supPrice">${esc(fmtMoney(supplierPrice))}</div>
-              <div class="supScore">цена/ед: ${esc(fmtMoney(m.price_per_unit ?? m.price))}</div>
+              <div class="supScore">цена/${esc(priceUnitLabel || "ед.")}: ${esc(fmtMoney(m.price_per_unit ?? m.price))}</div>
+              <div class="supScore">ед.: ${esc(normalizeUnitLabel(m.unit) || "—")}</div>
             </div>
             ${bestNote ? `<div class="supScore">выгодно: ${esc(bestNote)}</div>` : ""}
             <div class="iconRow">
@@ -753,7 +813,12 @@
       return `
         <tr>
           <td class="sticky-col-1">${esc(it.row_no ?? "")}</td>
-          <td class="sticky-col-2"><b>${esc(it.name_input || "")}</b></td>
+          <td class="sticky-col-2">
+            <div class="tender-item-name">
+              <b>${esc(it.name_input || "")}</b>
+              <button class="iconBtn tender-item-delete" title="Удалить позицию" data-delete-item="${esc(it.id)}" data-delete-name="${esc(it.name_input || "")}">✖</button>
+            </div>
+          </td>
           <td>
             <input
               class="input input-qty"
@@ -765,7 +830,6 @@
               value="${esc(qtyValue)}"
             />
           </td>
-          <td>${esc(it.unit_input || "")}</td>
           ${rowCells}
         </tr>
       `;
@@ -821,6 +885,29 @@
       };
     });
 
+    $$("[data-delete-item]", tbl).forEach(btn => {
+      btn.onclick = async () => {
+        const itemId = Number(btn.getAttribute("data-delete-item"));
+        const name = btn.getAttribute("data-delete-name") || "";
+        const label = name ? `позицию "${name}"` : `позицию #${itemId}`;
+        if (!confirm(`Удалить ${label}?`)) return;
+        try {
+          await apiJson(`/api/tenders/items/${itemId}`, { method: "DELETE" });
+          if (state.blocked) {
+            Object.keys(state.blocked).forEach(key => {
+              if (key.startsWith(`${itemId}:`)) {
+                delete state.blocked[key];
+              }
+            });
+            saveBlockedLS(state.project.id, state.blocked);
+          }
+          await reloadProjectHard();
+        } catch (e) {
+          alert("Не удалось удалить позицию.");
+        }
+      };
+    });
+
     $$("[data-qty-item-id]", tbl).forEach(input => {
       input.addEventListener("change", async () => {
         const itemId = Number(input.getAttribute("data-qty-item-id"));
@@ -870,7 +957,7 @@
         row_no: it.row_no,
         name_input: it.name_input,
         qty: it.qty,
-        unit_input: it.unit_input,
+        unit: offer.unit,
         supplier_id: offer.supplier_id,
         supplier_name: offer.supplier_name,
         supplier_item_id: offer.supplier_item_id,
@@ -922,7 +1009,7 @@
               <td>${esc(r.row_no ?? "")}</td>
               <td><b>${esc(r.name_input || "")}</b></td>
               <td>${esc(fmtNum(r.qty, 3))}</td>
-              <td>${esc(r.unit_input || "")}</td>
+              <td>${esc(r.unit || "")}</td>
               <td>${esc(r.supplier_name || ("#" + r.supplier_id))}</td>
               <td>${esc(r.name_raw || "")}</td>
               <td>
@@ -979,6 +1066,7 @@
 
   function renderCartTotals(cart) {
     const totalsBox = $("#tenders-totals");
+    if (!totalsBox) return;
     const bySup = new Map();
     for (const r of cart) {
       const sid = Number(r.supplier_id);
@@ -1084,19 +1172,62 @@
         alert("Введите корректное количество.");
         return;
       }
-      const unitVal = (unitInput?.value || "").trim();
       try {
-        await addTenderItem({
+        const payload = {
           name_input: name,
           qty: qtyVal,
-          unit_input: unitVal || null,
-        });
+        };
+        const unitValue = (unitInput?.value || "").trim();
+        if (unitValue) {
+          payload.unit_input = unitValue;
+        }
+        await addTenderItem(payload);
         if (nameInput) nameInput.value = "";
         if (qtyInput) qtyInput.value = "";
         if (unitInput) unitInput.value = "";
         await reloadProjectHard();
       } catch (e) {
         alert("Не удалось добавить позицию.");
+      }
+    });
+
+    const pasteForm = $("#tenders-paste-form");
+    pasteForm?.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const pid = state.project?.id;
+      if (!pid) return;
+      const textArea = $("#tenders-paste-text");
+      const unitSelect = $("#tenders-paste-unit");
+      const submitBtn = $("#tenders-paste-submit");
+      const text = (textArea?.value || "").trim();
+      if (!text) {
+        alert("Вставьте список позиций.");
+        return;
+      }
+      const defaultUnit = (unitSelect?.value || "").trim();
+      if (submitBtn) submitBtn.disabled = true;
+      try {
+        const j = await addTenderItemsBulkFromText(text, defaultUnit);
+        const inserted = Number(j?.inserted || 0);
+        const skipped = Number(j?.skipped || 0);
+        const errors = Array.isArray(j?.errors) ? j.errors : [];
+        const summary = `Добавлено: ${inserted} • проблемных строк: ${skipped}`;
+        if (typeof toast === "function") {
+          toast("Готово", summary);
+        } else {
+          const details = errors.slice(0, 8).map(err => {
+            const lineNo = err.line_no ?? "";
+            return `${lineNo}) ${err.line} — ${err.reason}`;
+          }).join("\n");
+          alert(details ? `${summary}\n\n${details}` : summary);
+        }
+        if (textArea) textArea.value = "";
+        await reloadProjectHard();
+      } catch (err) {
+        const msg = err?.payload?.error || err?.message || "Не удалось добавить позиции.";
+        alert(msg);
+      } finally {
+        if (submitBtn) submitBtn.disabled = false;
       }
     });
 
@@ -1160,7 +1291,9 @@
       const pid = state.project?.id;
       if (!pid) return;
 
-      const ids = $$("input[data-supplier-id]", $("#tenders-suppliers-list"))
+      const listRoot = $("#tenders-suppliers-list");
+      if (!listRoot) return;
+      const ids = $$("input[data-supplier-id]", listRoot)
         .filter(i => i.checked)
         .map(i => Number(i.getAttribute("data-supplier-id")))
         .filter(Number.isFinite);

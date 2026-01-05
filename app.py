@@ -429,6 +429,139 @@ def create_app() -> Flask:
             return jsonify(payload), status
 
     # ---------------- API: tenders ----------------
+    try:
+        TENDER_BULK_MAX_ITEMS = int(os.getenv("TENDER_BULK_MAX_ITEMS", "300"))
+    except Exception:
+        TENDER_BULK_MAX_ITEMS = 300
+    try:
+        TENDER_BULK_MAX_TEXT_LEN = int(os.getenv("TENDER_BULK_MAX_TEXT_LEN", "50000"))
+    except Exception:
+        TENDER_BULK_MAX_TEXT_LEN = 50000
+    TENDER_ALLOWED_UNITS = {
+        "кг": "кг",
+        "г": "г",
+        "гр": "гр",
+        "л": "л",
+        "мл": "мл",
+        "kg": "кг",
+        "g": "г",
+        "gr": "г",
+        "l": "л",
+        "ml": "мл",
+    }
+
+    def _normalize_tender_unit(unit: Optional[str]) -> Optional[str]:
+        if unit is None:
+            return None
+        cleaned = str(unit).strip().lower().rstrip(".")
+        if not cleaned:
+            return None
+        return TENDER_ALLOWED_UNITS.get(cleaned)
+
+    def _parse_tender_items_from_text(
+        text: str, default_unit: Optional[str] = None, max_items: int = TENDER_BULK_MAX_ITEMS
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        errors: List[Dict[str, Any]] = []
+        items: List[Dict[str, Any]] = []
+
+        def _parse_qty(raw: str) -> Optional[float]:
+            if raw is None:
+                return None
+            raw = str(raw).strip()
+            if not raw:
+                return None
+            try:
+                val = float(raw.replace(" ", "").replace(",", "."))
+            except Exception:
+                return None
+            return val if math.isfinite(val) else None
+
+        def _parse_qty_unit_segment(segment: str) -> Tuple[Optional[float], Optional[str]]:
+            seg = segment.strip()
+            if not seg:
+                return None, None
+            m = re.match(r"^([0-9]+(?:[.,][0-9]+)?)\s*([^\s]+)?$", seg)
+            if not m:
+                return None, None
+            qty_val = _parse_qty(m.group(1))
+            unit_raw = m.group(2)
+            return qty_val, unit_raw
+
+        lines = text.splitlines()
+        for idx, raw_line in enumerate(lines, start=1):
+            line = raw_line.strip()
+            if not line:
+                continue
+            if len(items) >= max_items:
+                break
+            line = re.sub(r"^\s*(?:[-•*—–]+|\d+\s*[\).\-])\s*", "", line).strip()
+            if not line:
+                continue
+
+            qty_val = None
+            unit_raw: Optional[str] = None
+            name_part: Optional[str] = None
+
+            paren_match = re.match(r"^(.*?)\s*\(([^)]*)\)\s*$", line)
+            if paren_match:
+                line = paren_match.group(1).strip()
+                qty_val, unit_raw = _parse_qty_unit_segment(paren_match.group(2))
+
+            if qty_val is None and unit_raw is None and ("\t" in line or ";" in line):
+                parts = [p.strip() for p in re.split(r"[;\t]+", line) if p.strip() != ""]
+                if len(parts) >= 2:
+                    name_part = parts[0]
+                    qty_val = _parse_qty(parts[1])
+                    unit_raw = parts[2] if len(parts) >= 3 else None
+
+            if name_part is None:
+                m = re.match(
+                    r"^(.*?)(?:\s*[-–—]\s*|\s+)([0-9]+(?:[.,][0-9]+)?)\s*([^\s]+)?\s*$",
+                    line,
+                )
+                if m:
+                    name_part = m.group(1).strip()
+                    qty_val = _parse_qty(m.group(2))
+                    unit_raw = m.group(3)
+                else:
+                    name_part = line.strip()
+
+            if not name_part:
+                continue
+
+            unit_input = unit_raw.strip() if unit_raw else None
+            unit_norm = _normalize_tender_unit(unit_input)
+            qty_output = qty_val
+            unit_output = unit_norm or unit_input
+
+            if qty_val is not None and not unit_norm:
+                if unit_input:
+                    qty_output = None
+                    unit_output = None
+                    errors.append(
+                        {
+                            "line_no": idx,
+                            "line": raw_line,
+                            "reason": f"unsupported unit: {unit_input} (qty ignored)",
+                        }
+                    )
+                else:
+                    if default_unit:
+                        unit_output = default_unit
+                    else:
+                        qty_output = None
+                        unit_output = None
+
+            items.append(
+                {
+                    "name_input": name_part,
+                    "qty": qty_output,
+                    "unit_input": unit_output,
+                }
+            )
+
+        return items, errors
+
 
     def _import_tender_items_from_upload(conn, project_id: int, upload):
         category_map = get_category_map(conn)
@@ -507,9 +640,8 @@ def create_app() -> Flask:
                 qty_val = None
                 if idx_qty is not None and idx_qty < len(row_list):
                     qty_val = _parse_qty(row_list[idx_qty])
-                unit_val = None
                 if idx_unit is not None and idx_unit < len(row_list):
-                    unit_val = _string_or_none(row_list[idx_unit])
+                    _ = _string_or_none(row_list[idx_unit])
                 cat_val = None
                 if idx_cat is not None and idx_cat < len(row_list):
                     cat_raw = _string_or_none(row_list[idx_cat])
@@ -517,13 +649,13 @@ def create_app() -> Flask:
                 category_id = category_map.get(cat_val) if cat_val else None
                 row_no += 1
                 search_name = normalize_base(generate_search_name(name_val) or "") or None
-                items_to_insert.append((project_id, row_no, name_val, search_name, qty_val, unit_val, category_id))
+                items_to_insert.append((project_id, row_no, name_val, search_name, qty_val, category_id))
 
             if items_to_insert:
                 psycopg2.extras.execute_values(
                     cur,
                     """
-                    INSERT INTO tender_items(project_id, row_no, name_input, search_name, qty, unit_input, category_id)
+                    INSERT INTO tender_items(project_id, row_no, name_input, search_name, qty, category_id)
                     VALUES %s
                     """,
                     items_to_insert,
@@ -1245,7 +1377,13 @@ def create_app() -> Flask:
             if not math.isfinite(qty_val):
                 return jsonify({"error": "qty must be finite"}), 400
 
-        unit_input = str(data.get("unit_input") or "").strip() or None
+        unit_raw = data.get("unit_input")
+        if unit_raw not in (None, ""):
+            unit_input = _normalize_tender_unit(unit_raw)
+            if not unit_input:
+                return jsonify({"error": "unsupported unit", "details": "Разрешено: кг, г, л, мл"}), 400
+        else:
+            unit_input = None
 
         try:
             with db_connect() as conn:
@@ -1289,9 +1427,91 @@ def create_app() -> Flask:
         except Exception as e:
             return jsonify({"error": "internal error", "details": str(e)}), 500
 
+    @app.route("/api/tenders/<int:project_id>/items/bulk", methods=["POST"])
+    def api_tenders_items_bulk(project_id: int):
+        data = request.get_json(silent=True) or {}
+        text = data.get("text")
+        if text is None or not str(text).strip():
+            return jsonify({"error": "text required"}), 400
+        text = str(text)
+        if len(text) > TENDER_BULK_MAX_TEXT_LEN:
+            return jsonify({"error": "text too long"}), 400
+
+        default_unit_raw = data.get("default_unit")
+        if default_unit_raw not in (None, ""):
+            default_unit = _normalize_tender_unit(default_unit_raw)
+            if not default_unit:
+                return jsonify({"error": "unsupported default_unit"}), 400
+        else:
+            default_unit = None
+
+        total_lines = [line for line in text.splitlines() if line.strip()]
+        if len(total_lines) > TENDER_BULK_MAX_ITEMS:
+            return jsonify({"error": "too many items"}), 400
+
+        items, errors = _parse_tender_items_from_text(text, default_unit=default_unit)
+        rows_to_insert = []
+        try:
+            with db_connect() as conn:
+                ensure_schema_compare(conn)
+                with conn.cursor() as cur:
+                    cur.execute("SELECT id FROM tender_projects WHERE id=%s;", (project_id,))
+                    if not cur.fetchone():
+                        return jsonify({"error": "tender project not found"}), 404
+                    cur.execute(
+                        "SELECT COALESCE(MAX(row_no), 0) FROM tender_items WHERE project_id=%s;",
+                        (project_id,),
+                    )
+                    row_no = _scalar(cur.fetchone()) or 0
+                    for item in items:
+                        name_input = str(item.get("name_input") or "").strip()
+                        if not name_input:
+                            continue
+                        row_no += 1
+                        search_name = normalize_base(generate_search_name(name_input) or "") or None
+                        rows_to_insert.append(
+                            (
+                                project_id,
+                                row_no,
+                                name_input,
+                                search_name,
+                                item.get("qty"),
+                                item.get("unit_input"),
+                            )
+                        )
+                    if rows_to_insert:
+                        psycopg2.extras.execute_values(
+                            cur,
+                            """
+                            INSERT INTO tender_items(project_id, row_no, name_input, search_name, qty, unit_input)
+                            VALUES %s
+                            """,
+                            rows_to_insert,
+                        )
+                conn.commit()
+            return jsonify(
+                {
+                    "inserted": len(rows_to_insert),
+                    "skipped": len(errors),
+                    "errors": errors[:50],
+                }
+            )
+        except Exception as e:
+            return jsonify({"error": "internal error", "details": str(e)}), 500
+
     @app.route("/api/tenders/items/<int:item_id>", methods=["PATCH"])
     def api_tenders_items_update(item_id: int):
         data = request.get_json(silent=True) or {}
+        if "unit_input" in data:
+            return (
+                jsonify(
+                    {
+                        "error": "unit_input is not supported",
+                        "details": "Поле 'Ед.' не редактируется. Если ошиблись — удалите позицию и добавьте заново.",
+                    }
+                ),
+                400,
+            )
         updates = []
         values: List[Any] = []
         search_name_set = False
@@ -1322,11 +1542,6 @@ def create_app() -> Flask:
                     return jsonify({"error": "qty must be numeric"}), 400
             updates.append("qty=%s")
             values.append(qty_val)
-
-        if "unit_input" in data:
-            unit_input = str(data.get("unit_input") or "").strip() or None
-            updates.append("unit_input=%s")
-            values.append(unit_input)
 
         if "search_name" in data and not search_name_set:
             search_raw_value = data.get("search_name")
@@ -1369,6 +1584,22 @@ def create_app() -> Flask:
                 conn.commit()
 
             return jsonify({"item": dict(row)})
+        except Exception as e:
+            return jsonify({"error": "internal error", "details": str(e)}), 500
+
+    @app.route("/api/tenders/items/<int:item_id>", methods=["DELETE"])
+    def api_tenders_items_delete(item_id: int):
+        try:
+            with db_connect() as conn:
+                ensure_schema_compare(conn)
+                with conn.cursor() as cur:
+                    cur.execute("SELECT project_id FROM tender_items WHERE id=%s;", (item_id,))
+                    row = cur.fetchone()
+                    if not row:
+                        return jsonify({"error": "tender item not found"}), 404
+                    cur.execute("DELETE FROM tender_items WHERE id=%s RETURNING id;", (item_id,))
+                conn.commit()
+            return jsonify({"item_id": item_id, "project_id": row[0]})
         except Exception as e:
             return jsonify({"error": "internal error", "details": str(e)}), 500
 
@@ -2226,7 +2457,7 @@ def create_app() -> Flask:
                             "row_no": it.get("row_no"),
                             "name_input": it.get("name_input"),
                             "qty": tender_qty,
-                            "unit_input": it.get("unit_input"),
+                            "unit": offer.get("unit"),
                             "supplier_id": offer.get("supplier_id"),
                             "supplier_name": offer.get("supplier_name"),
                             "name_raw": offer.get("name_raw"),
@@ -2258,7 +2489,7 @@ def create_app() -> Flask:
                                 r.get("row_no"),
                                 r.get("name_input"),
                                 r.get("qty"),
-                                r.get("unit_input"),
+                                r.get("unit"),
                                 r.get("supplier_name"),
                                 r.get("name_raw"),
                                 r.get("order_qty"),
@@ -2313,7 +2544,7 @@ def create_app() -> Flask:
                             r.get("row_no"),
                             r.get("name_input"),
                             r.get("qty"),
-                            r.get("unit_input"),
+                            r.get("unit"),
                             r.get("supplier_name"),
                             r.get("name_raw"),
                             r.get("order_qty"),
