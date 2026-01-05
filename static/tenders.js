@@ -156,14 +156,36 @@
     return { effectivePrice: null, usesPpu: false };
   }
 
+  function normalizeUnitLabel(value) {
+    const raw = String(value || "").trim();
+    if (!raw) return "";
+    const key = raw.toLowerCase();
+    const map = {
+      kg: "кг",
+      g: "г",
+      gr: "г",
+      l: "л",
+      ml: "мл",
+      pcs: "шт",
+      pc: "шт",
+      piece: "шт",
+      pieces: "шт",
+      pack: "уп",
+      pkg: "уп",
+      box: "кор",
+      set: "компл",
+    };
+    return map[key] || raw;
+  }
+
   function getPriceUnitLabel(match) {
     if (!match) return "";
     const baseUnit = String(match.base_unit || "").trim();
     const unit = String(match.unit || "").trim();
     if (match.price_per_unit != null) {
-      return baseUnit || unit;
+      return normalizeUnitLabel(baseUnit || unit);
     }
-    return unit || baseUnit;
+    return normalizeUnitLabel(unit || baseUnit);
   }
 
   function getSupplierName(supplierId) {
@@ -774,7 +796,7 @@
             <div class="supMeta">
               <div class="supPrice">${esc(fmtMoney(supplierPrice))}</div>
               <div class="supScore">цена/${esc(priceUnitLabel || "ед.")}: ${esc(fmtMoney(m.price_per_unit ?? m.price))}</div>
-              <div class="supScore">ед.: ${esc(m.unit || "—")}</div>
+              <div class="supScore">ед.: ${esc(normalizeUnitLabel(m.unit) || "—")}</div>
             </div>
             ${bestNote ? `<div class="supScore">выгодно: ${esc(bestNote)}</div>` : ""}
             <div class="iconRow">
