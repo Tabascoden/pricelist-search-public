@@ -436,6 +436,7 @@
     const updated = await refreshItemOffers(itemId);
     if (updated) {
       renderProjectTable();
+      renderOneSupplierBlock();
       renderCart();
     } else {
       await reloadProjectHard();
@@ -624,6 +625,7 @@
 
     renderSelectedSuppliersChipline();
     renderProjectTable();
+    renderOneSupplierBlock();
     renderCart();
     ensureTenderGridMaxHeight();
     bindTenderGridMaxHeight();
@@ -780,6 +782,7 @@
         state.blocked[key] = true;
         saveBlockedLS(state.project.id, state.blocked);
         renderProjectTable();
+        renderOneSupplierBlock();
       };
     });
 
@@ -789,6 +792,7 @@
         delete state.blocked[key];
         saveBlockedLS(state.project.id, state.blocked);
         renderProjectTable();
+        renderOneSupplierBlock();
       };
     });
 
@@ -846,6 +850,124 @@
         }
       });
     });
+  }
+
+  function renderOneSupplierBlock() {
+    const box = $("#tenders-one-supplier");
+    if (!box) return;
+
+    const items = state.project?.items || [];
+    const supplierIds = (state.selectedSupplierIds || []).map(Number).filter(Number.isFinite);
+
+    if (!items.length) {
+      box.innerHTML = `<div class="tender-hint" style="margin-top:10px;">В тендере нет позиций.</div>`;
+      return;
+    }
+
+    if (!supplierIds.length) {
+      box.innerHTML = `<div class="tender-hint" style="margin-top:10px;">Выберите поставщиков для сравнения.</div>`;
+      return;
+    }
+
+    const relevantItems = items.filter(it => Number(it.qty) > 0);
+    const totalItems = relevantItems.length;
+    const rows = supplierIds.map(sid => {
+      let found = 0;
+      let sum = 0;
+
+      for (const it of relevantItems) {
+        if (isBlocked(it.id, sid)) {
+          continue;
+        }
+
+        const selectedForSupplier = (it.offers || []).find(
+          o => Number(o.supplier_id) === Number(sid) && ["selected", "final"].includes(o.offer_type)
+        );
+
+        const m = selectedForSupplier || getMatch(it.id, sid);
+        if (!m) {
+          continue;
+        }
+
+        const score = Number(m.score);
+        if (!selectedForSupplier && (!Number.isFinite(score) || score < MIN_SCORE)) {
+          continue;
+        }
+
+        const { effectivePrice } = getEffectivePrice(m);
+        if (!Number.isFinite(effectivePrice)) {
+          continue;
+        }
+
+        const overrideRaw = state.orderQtyOverrides?.[String(it.id)];
+        const overrideNum = Number(overrideRaw);
+        const qty = Number.isFinite(overrideNum) ? overrideNum : Number(it.qty);
+        if (!Number.isFinite(qty)) {
+          continue;
+        }
+
+        const { totalPrice } = calcTotals(m, qty);
+        if (!Number.isFinite(totalPrice)) {
+          continue;
+        }
+
+        found += 1;
+        sum += totalPrice;
+      }
+
+      const missing = totalItems - found;
+      const coveragePct = totalItems > 0 ? (found / totalItems) * 100 : 0;
+      return {
+        supplier_id: sid,
+        supplier_name: getSupplierName(sid),
+        found,
+        missing,
+        sum,
+        coveragePct,
+      };
+    });
+
+    rows.sort((a, b) => {
+      if (a.missing !== b.missing) return a.missing - b.missing;
+      return a.sum - b.sum;
+    });
+
+    let highlightId = null;
+    const withFullCoverage = rows.filter(r => r.missing === 0);
+    const bestRow = (withFullCoverage.length ? withFullCoverage : rows)
+      .reduce((best, row) => (best == null || row.sum < best.sum ? row : best), null);
+    highlightId = bestRow?.supplier_id ?? null;
+
+    box.innerHTML = `
+      <div class="totalsGrid">
+        <table>
+          <thead>
+            <tr>
+              <th>Поставщик</th>
+              <th style="width:130px;">Найдено позиций</th>
+              <th style="width:110px;">Не найдено</th>
+              <th style="width:120px;">Покрытие, %</th>
+              <th style="width:160px;">Сумма</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows.map(row => {
+              const isBest = highlightId != null && Number(row.supplier_id) === Number(highlightId);
+              const coverageLabel = Number.isFinite(row.coveragePct) ? `${fmtNum(row.coveragePct, 1)}%` : "";
+              return `
+                <tr${isBest ? ' style="background:#fffbeb;"' : ""}>
+                  <td><b>${esc(row.supplier_name)}</b></td>
+                  <td>${esc(row.found)}</td>
+                  <td>${esc(row.missing)}</td>
+                  <td>${esc(coverageLabel)}</td>
+                  <td><b>${esc(fmtMoney(row.sum))}</b></td>
+                </tr>
+              `;
+            }).join("")}
+          </tbody>
+        </table>
+      </div>
+    `;
   }
 
   function renderCart() {
@@ -970,6 +1092,7 @@
         const sumCell = box.querySelector(`[data-order-sum="${CSS.escape(String(itemId))}"]`);
         if (sumCell) sumCell.textContent = fmtMoney(total);
         renderCartTotals(cart);
+        renderOneSupplierBlock();
       });
     });
 
