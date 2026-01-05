@@ -1386,6 +1386,22 @@ def create_app() -> Flask:
         except Exception as e:
             return jsonify({"error": "internal error", "details": str(e)}), 500
 
+    @app.route("/api/tenders/items/<int:item_id>", methods=["DELETE"])
+    def api_tenders_items_delete(item_id: int):
+        try:
+            with db_connect() as conn:
+                ensure_schema_compare(conn)
+                with conn.cursor() as cur:
+                    cur.execute("SELECT project_id FROM tender_items WHERE id=%s;", (item_id,))
+                    row = cur.fetchone()
+                    if not row:
+                        return jsonify({"error": "tender item not found"}), 404
+                    cur.execute("DELETE FROM tender_items WHERE id=%s RETURNING id;", (item_id,))
+                conn.commit()
+            return jsonify({"item_id": item_id, "project_id": row[0]})
+        except Exception as e:
+            return jsonify({"error": "internal error", "details": str(e)}), 500
+
     @app.route("/api/tenders/items/<int:item_id>/star", methods=["POST"])
     def api_tenders_items_star(item_id: int):
         data = request.get_json(silent=True) or {}

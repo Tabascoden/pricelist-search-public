@@ -768,7 +768,12 @@
       return `
         <tr>
           <td class="sticky-col-1">${esc(it.row_no ?? "")}</td>
-          <td class="sticky-col-2"><b>${esc(it.name_input || "")}</b></td>
+          <td class="sticky-col-2">
+            <div class="tender-item-name">
+              <b>${esc(it.name_input || "")}</b>
+              <button class="iconBtn tender-item-delete" title="Удалить позицию" data-delete-item="${esc(it.id)}" data-delete-name="${esc(it.name_input || "")}">✖</button>
+            </div>
+          </td>
           <td>
             <input
               class="input input-qty"
@@ -832,6 +837,29 @@
           body: JSON.stringify({ supplier_item_id: supplierItemId }),
         });
         await reloadProjectHard();
+      };
+    });
+
+    $$("[data-delete-item]", tbl).forEach(btn => {
+      btn.onclick = async () => {
+        const itemId = Number(btn.getAttribute("data-delete-item"));
+        const name = btn.getAttribute("data-delete-name") || "";
+        const label = name ? `позицию "${name}"` : `позицию #${itemId}`;
+        if (!confirm(`Удалить ${label}?`)) return;
+        try {
+          await apiJson(`/api/tenders/items/${itemId}`, { method: "DELETE" });
+          if (state.blocked) {
+            Object.keys(state.blocked).forEach(key => {
+              if (key.startsWith(`${itemId}:`)) {
+                delete state.blocked[key];
+              }
+            });
+            saveBlockedLS(state.project.id, state.blocked);
+          }
+          await reloadProjectHard();
+        } catch (e) {
+          alert("Не удалось удалить позицию.");
+        }
       };
     });
 
