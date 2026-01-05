@@ -91,22 +91,6 @@
     <div id="tenders-selected-suppliers" class="tender-legend"></div>
 
     <div class="tender-add" style="margin-top:10px;">
-      <div class="tender-add-title">Добавить позицию вручную</div>
-      <form class="tender-add-form" id="tenders-add-item-form">
-        <input class="input" id="tenders-add-name" placeholder="Номенклатура" required />
-        <input class="input input-qty" id="tenders-add-qty" type="number" min="0" step="0.001" placeholder="Количество" />
-        <select class="input input-unit" id="tenders-add-unit">
-          <option value="">Ед.</option>
-          <option value="кг">кг</option>
-          <option value="г">г</option>
-          <option value="л">л</option>
-          <option value="мл">мл</option>
-        </select>
-        <button class="btn" type="submit">Добавить</button>
-      </form>
-    </div>
-
-    <div class="tender-add" style="margin-top:10px;">
       <div class="tender-add-title">Добавить списком (копипаст из мессенджера)</div>
       <form class="tender-add-form-col" id="tenders-paste-form">
         <textarea class="input" id="tenders-paste-text" rows="7" placeholder="Каждая строка — одна позиция"></textarea>
@@ -195,7 +179,7 @@
   #tenders-demo .h3 { font-size: 16px; font-weight: 800; }
   #tenders-demo .tender-actions { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
   #tenders-demo .tender-hint { color:#64748b; font-size: 13px; }
-  #tenders-demo .tender-grid { width:100%; overflow:auto; scrollbar-gutter: stable both-edges; position: relative; }
+  #tenders-demo .tender-grid { width:100%; height:360px; overflow:auto; scrollbar-gutter: stable both-edges; position: relative; }
   #tenders-demo .tender-grid table { width:100%; border-collapse: collapse; }
   #tenders-demo .tender-grid th, #tenders-demo .tender-grid td { border-bottom: 1px solid #e2e8f0; padding: 10px; vertical-align: top; }
   #tenders-demo .tender-grid thead th { position: sticky; top: 0; background: #f8fafc; z-index: 10; font-size:12px; text-transform: uppercase; color:#475569; }
