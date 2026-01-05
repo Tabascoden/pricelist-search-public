@@ -507,9 +507,8 @@ def create_app() -> Flask:
                 qty_val = None
                 if idx_qty is not None and idx_qty < len(row_list):
                     qty_val = _parse_qty(row_list[idx_qty])
-                unit_val = None
                 if idx_unit is not None and idx_unit < len(row_list):
-                    unit_val = _string_or_none(row_list[idx_unit])
+                    _ = _string_or_none(row_list[idx_unit])
                 cat_val = None
                 if idx_cat is not None and idx_cat < len(row_list):
                     cat_raw = _string_or_none(row_list[idx_cat])
@@ -517,13 +516,13 @@ def create_app() -> Flask:
                 category_id = category_map.get(cat_val) if cat_val else None
                 row_no += 1
                 search_name = normalize_base(generate_search_name(name_val) or "") or None
-                items_to_insert.append((project_id, row_no, name_val, search_name, qty_val, unit_val, category_id))
+                items_to_insert.append((project_id, row_no, name_val, search_name, qty_val, category_id))
 
             if items_to_insert:
                 psycopg2.extras.execute_values(
                     cur,
                     """
-                    INSERT INTO tender_items(project_id, row_no, name_input, search_name, qty, unit_input, category_id)
+                    INSERT INTO tender_items(project_id, row_no, name_input, search_name, qty, category_id)
                     VALUES %s
                     """,
                     items_to_insert,
@@ -1231,6 +1230,16 @@ def create_app() -> Flask:
     @app.route("/api/tenders/<int:project_id>/items", methods=["POST"])
     def api_tenders_items_add(project_id: int):
         data = request.get_json(silent=True) or {}
+        if "unit_input" in data:
+            return (
+                jsonify(
+                    {
+                        "error": "unit_input is not supported",
+                        "details": "Поле 'Ед.' больше не редактируется. Единицы берутся из прайсов поставщиков.",
+                    }
+                ),
+                400,
+            )
         name_input = str(data.get("name_input") or "").strip()
         if not name_input:
             return jsonify({"error": "name_input required"}), 400
@@ -1245,7 +1254,7 @@ def create_app() -> Flask:
             if not math.isfinite(qty_val):
                 return jsonify({"error": "qty must be finite"}), 400
 
-        unit_input = str(data.get("unit_input") or "").strip() or None
+        unit_input = None
 
         try:
             with db_connect() as conn:
@@ -1292,6 +1301,16 @@ def create_app() -> Flask:
     @app.route("/api/tenders/items/<int:item_id>", methods=["PATCH"])
     def api_tenders_items_update(item_id: int):
         data = request.get_json(silent=True) or {}
+        if "unit_input" in data:
+            return (
+                jsonify(
+                    {
+                        "error": "unit_input is not supported",
+                        "details": "Поле 'Ед.' больше не редактируется. Единицы берутся из прайсов поставщиков.",
+                    }
+                ),
+                400,
+            )
         updates = []
         values: List[Any] = []
         search_name_set = False
@@ -1322,11 +1341,6 @@ def create_app() -> Flask:
                     return jsonify({"error": "qty must be numeric"}), 400
             updates.append("qty=%s")
             values.append(qty_val)
-
-        if "unit_input" in data:
-            unit_input = str(data.get("unit_input") or "").strip() or None
-            updates.append("unit_input=%s")
-            values.append(unit_input)
 
         if "search_name" in data and not search_name_set:
             search_raw_value = data.get("search_name")
@@ -2226,7 +2240,7 @@ def create_app() -> Flask:
                             "row_no": it.get("row_no"),
                             "name_input": it.get("name_input"),
                             "qty": tender_qty,
-                            "unit_input": it.get("unit_input"),
+                            "unit": offer.get("unit"),
                             "supplier_id": offer.get("supplier_id"),
                             "supplier_name": offer.get("supplier_name"),
                             "name_raw": offer.get("name_raw"),
@@ -2258,7 +2272,7 @@ def create_app() -> Flask:
                                 r.get("row_no"),
                                 r.get("name_input"),
                                 r.get("qty"),
-                                r.get("unit_input"),
+                                r.get("unit"),
                                 r.get("supplier_name"),
                                 r.get("name_raw"),
                                 r.get("order_qty"),
@@ -2313,7 +2327,7 @@ def create_app() -> Flask:
                             r.get("row_no"),
                             r.get("name_input"),
                             r.get("qty"),
-                            r.get("unit_input"),
+                            r.get("unit"),
                             r.get("supplier_name"),
                             r.get("name_raw"),
                             r.get("order_qty"),
