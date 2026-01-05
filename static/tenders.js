@@ -192,7 +192,8 @@
       const rect = grid.getBoundingClientRect();
       const available = window.innerHeight - rect.top - 24;
       if (!Number.isFinite(available)) return;
-      grid.style.maxHeight = `${Math.max(160, Math.floor(available))}px`;
+      const baseHeight = Math.max(160, Math.floor(available));
+      grid.style.maxHeight = `${baseHeight * 5}px`;
     });
   }
 
