@@ -528,6 +528,139 @@ def create_app() -> Flask:
                     items_to_insert,
                 )
         return len(items_to_insert)
+
+    def _parse_tender_items_from_text(
+        text: str,
+        default_unit: Optional[str] = None,
+        max_items: int = 300,
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """
+        Парсит "копипаст из мессенджера":
+          - каждая непустая строка = позиция
+          - поддержка форматов:
+              "Картофель 10 кг"
+              "Картофель - 10 кг"
+              "Картофель\t10\tкг"
+              "1) Картофель — 10 кг"
+          - если qty не найден -> добавляем только name_input
+        Возвращает (items, errors).
+        item: {name_input, qty, unit_input}
+        error: {line_no, line, reason}
+        """
+        items: List[Dict[str, Any]] = []
+        errors: List[Dict[str, Any]] = []
+
+        if not text:
+            return items, errors
+
+        # соберём непустые строки
+        raw_lines = [ln for ln in re.split(r"\r?\n", str(text)) if (ln or "").strip()]
+        if len(raw_lines) > max_items:
+            return (
+                [],
+                [
+                    {
+                        "line_no": None,
+                        "line": None,
+                        "reason": f"too many lines: {len(raw_lines)} (limit {max_items})",
+                    }
+                ],
+            )
+
+        def _parse_qty_str(value: Any) -> Optional[float]:
+            if value is None:
+                return None
+            raw = str(value).strip()
+            if not raw or raw.lower() == "nan":
+                return None
+            raw = raw.replace(" ", "").replace(",", ".")
+            # допускаем только обычные числа
+            if not re.match(r"^-?\d+(\.\d+)?$", raw):
+                return None
+            try:
+                q = float(raw)
+            except Exception:
+                return None
+            if not math.isfinite(q):
+                return None
+            return q
+
+        def _cleanup_prefix(s: str) -> str:
+            # "- ", "• ", "* ", "1) ", "1. "
+            s = re.sub(r"^\s*(?:[-–—•*]+|\d+\s*[\)\.])\s*", "", s)
+            return s.strip()
+
+        def _parse_one(line: str) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+            src = (line or "").strip()
+            if not src:
+                return None, None
+            s = _cleanup_prefix(src)
+            if not s:
+                return None, None
+
+            # табы/точка-с-запятой как "колонки"
+            if "\t" in s or (s.count(";") >= 2):
+                parts = [p.strip() for p in re.split(r"(?:\t+|;)+", s) if p.strip()]
+                if not parts:
+                    return None, None
+                name = parts[0]
+                qty = _parse_qty_str(parts[1]) if len(parts) >= 2 else None
+                unit = (parts[2].strip() if len(parts) >= 3 else "") or None
+                unit = unit.strip().strip(".") if unit else None
+                if qty is not None and not unit and default_unit:
+                    unit = default_unit
+                if not name.strip():
+                    return None, "empty name"
+                return {"name_input": name.strip(), "qty": qty, "unit_input": unit}, None
+
+            # вариант "name (10 кг)"
+            m = re.match(
+                r"^(?P<name>.+?)\s*\(\s*(?P<qty>\d+(?:[.,]\d+)?)\s*(?P<unit>[A-Za-zА-Яа-я\.]+)?\s*\)\s*$",
+                s,
+            )
+            if m:
+                name = (m.group("name") or "").strip()
+                qty = _parse_qty_str(m.group("qty"))
+                unit = (m.group("unit") or "").strip().strip(".") or None
+                if qty is not None and not unit and default_unit:
+                    unit = default_unit
+                if not name:
+                    return None, "empty name"
+                return {"name_input": name, "qty": qty, "unit_input": unit}, None
+
+            # основной вариант: "... 10 кг" / "... - 10кг"
+            m = re.match(
+                r"^(?P<name>.+?)(?:\s*[-–—:]\s*|\s+)(?P<qty>\d+(?:[.,]\d+)?)\s*(?P<unit>[A-Za-zА-Яа-я\.]+)?\s*$",
+                s,
+            )
+            if m:
+                name = (m.group("name") or "").strip()
+                qty = _parse_qty_str(m.group("qty"))
+                unit = (m.group("unit") or "").strip().strip(".") or None
+                if qty is None:
+                    return None, "bad qty"
+                if qty is not None and not unit and default_unit:
+                    unit = default_unit
+                if not name:
+                    return None, "empty name"
+                return {"name_input": name, "qty": qty, "unit_input": unit}, None
+
+            # иначе: просто название
+            return {"name_input": s, "qty": None, "unit_input": None}, None
+
+        for i, raw in enumerate(raw_lines, start=1):
+            item, err = _parse_one(raw)
+            if err:
+                errors.append({"line_no": i, "line": raw, "reason": err})
+                continue
+            if not item:
+                continue
+            if not str(item.get("name_input") or "").strip():
+                errors.append({"line_no": i, "line": raw, "reason": "empty name"})
+                continue
+            items.append(item)
+
+        return items, errors
     def _extract_unit_hint(
         name_input: Optional[str], unit_input: Optional[str]
     ) -> Tuple[Optional[str], Optional[Decimal]]:
@@ -1293,6 +1426,100 @@ def create_app() -> Flask:
                         "qty": qty_val,
                         "unit_input": unit_input,
                     }
+                }
+            )
+        except Exception as e:
+            return jsonify({"error": "internal error", "details": str(e)}), 500
+
+    @app.route("/api/tenders/<int:project_id>/items/bulk", methods=["POST"])
+    def api_tenders_items_bulk_add(project_id: int):
+        data = request.get_json(silent=True) or {}
+        text = str(data.get("text") or "")
+        default_unit = str(data.get("default_unit") or "").strip() or None
+        max_items_raw = data.get("max_items")
+        try:
+            max_items = int(max_items_raw) if max_items_raw is not None else 300
+        except Exception:
+            max_items = 300
+        max_items = max(1, min(max_items, 1000))
+
+        items, errors = _parse_tender_items_from_text(
+            text, default_unit=default_unit, max_items=max_items
+        )
+        if errors and not items:
+            return (
+                jsonify(
+                    {
+                        "error": "bad input",
+                        "details": "Не удалось разобрать список",
+                        "errors": errors,
+                    }
+                ),
+                400,
+            )
+        if not items:
+            return jsonify({"inserted": 0, "skipped": 0, "errors": []})
+
+        try:
+            with db_connect() as conn:
+                ensure_schema_compare(conn)
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT id FROM tender_projects WHERE id=%s;", (project_id,)
+                    )
+                    if not cur.fetchone():
+                        return jsonify({"error": "tender project not found"}), 404
+
+                    cur.execute(
+                        "SELECT COALESCE(MAX(row_no), 0) FROM tender_items WHERE project_id=%s;",
+                        (project_id,),
+                    )
+                    row_no = _scalar(cur.fetchone()) or 0
+
+                    rows_to_insert = []
+                    for it in items:
+                        name_input = str(it.get("name_input") or "").strip()
+                        if not name_input:
+                            continue
+                        qty_val = it.get("qty")
+                        try:
+                            qty_val = float(qty_val) if qty_val is not None else None
+                        except Exception:
+                            qty_val = None
+                        if qty_val is not None and not math.isfinite(qty_val):
+                            qty_val = None
+                        unit_input = str(it.get("unit_input") or "").strip() or None
+                        row_no += 1
+                        search_name = (
+                            normalize_base(generate_search_name(name_input) or "") or None
+                        )
+                        rows_to_insert.append(
+                            (
+                                project_id,
+                                row_no,
+                                name_input,
+                                search_name,
+                                qty_val,
+                                unit_input,
+                            )
+                        )
+
+                    if rows_to_insert:
+                        psycopg2.extras.execute_values(
+                            cur,
+                            """
+                            INSERT INTO tender_items(project_id, row_no, name_input, search_name, qty, unit_input)
+                            VALUES %s
+                            """,
+                            rows_to_insert,
+                        )
+                conn.commit()
+
+            return jsonify(
+                {
+                    "inserted": len(rows_to_insert),
+                    "skipped": len(errors),
+                    "errors": errors[:50],
                 }
             )
         except Exception as e:
