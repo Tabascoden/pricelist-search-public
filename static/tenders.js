@@ -484,6 +484,19 @@
     });
   }
 
+  async function addTenderItemsBulkFromText(text, defaultUnit) {
+    const pid = state.project?.id;
+    if (!pid) return null;
+    return await apiJson(`/api/tenders/${pid}/items/bulk`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        text: String(text || ""),
+        default_unit: (defaultUnit || "").trim() || null,
+      }),
+    });
+  }
+
   async function clearFromCart(itemId) {
     const pid = state.project?.id;
     if (!pid) return;
@@ -1135,6 +1148,48 @@
         await reloadProjectHard();
       } catch (e) {
         alert("Не удалось добавить позицию.");
+      }
+    });
+
+    const pasteForm = $("#tenders-paste-form");
+    pasteForm?.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const pid = state.project?.id;
+      if (!pid) return;
+      const textEl = $("#tenders-paste-text");
+      const unitEl = $("#tenders-paste-unit");
+      const btn = $("#tenders-paste-submit");
+      const text = (textEl?.value || "").trim();
+      if (!text) {
+        alert("Вставьте список номенклатуры (каждая строка — позиция).");
+        return;
+      }
+      const defaultUnit = (unitEl?.value || "").trim();
+      if (btn) btn.disabled = true;
+      try {
+        const j = await addTenderItemsBulkFromText(text, defaultUnit);
+        const inserted = Number(j?.inserted || 0);
+        const skipped = Number(j?.skipped || 0);
+        const errs = Array.isArray(j?.errors) ? j.errors : [];
+        if (typeof toast === "function") {
+          toast("Готово", `Добавлено: ${inserted}${skipped ? ` • пропущено: ${skipped}` : ""}`);
+        } else {
+          let msg = `Добавлено: ${inserted}`;
+          if (skipped) msg += `\nПропущено строк: ${skipped}`;
+          if (errs.length) {
+            msg += `\n\nПримеры ошибок:\n` + errs.slice(0, 8).map(x =>
+              `• строка ${x.line_no ?? "?"}: ${x.reason || "ошибка"}`
+            ).join("\n");
+          }
+          alert(msg);
+        }
+        if (textEl) textEl.value = "";
+        await reloadProjectHard();
+      } catch (err) {
+        console.error(err);
+        alert("Не удалось добавить список.");
+      } finally {
+        if (btn) btn.disabled = false;
       }
     });
 

@@ -99,6 +99,23 @@
       </form>
     </div>
 
+    <div class="tender-add" style="margin-top:10px;">
+      <div class="tender-add-title">Добавить списком (копипаст из мессенджера)</div>
+      <form class="tender-add-form-col" id="tenders-paste-form">
+        <textarea class="input" id="tenders-paste-text" rows="6"
+          placeholder="Каждая строка — позиция. Примеры:
+Картофель 10 кг
+Лук - 5 кг
+Молоко 12 л
+Сахар"></textarea>
+        <div class="row">
+          <input class="input input-unit-wide" id="tenders-paste-unit" placeholder="Ед. по умолчанию (опционально)" />
+          <button class="btn" type="submit" id="tenders-paste-submit">Добавить списком</button>
+        </div>
+        <div class="tender-hint">Поддержка форматов: “Название 10 кг”, “Название - 10 кг”, “Название↹10↹кг”, нумерация “1) …”.</div>
+      </form>
+    </div>
+
     <div class="tender-grid" id="tenders-grid" style="margin-top:12px;">
       <table id="tenders-project-table"></table>
     </div>
@@ -241,6 +258,10 @@
   #tenders-demo .tender-add-title { font-weight: 700; margin-bottom: 8px; }
   #tenders-demo .tender-add-form { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
   #tenders-demo .input-qty { width: 70px; }
+  #tenders-demo .tender-add-form-col { display:flex; flex-direction:column; gap:10px; align-items:stretch; }
+  #tenders-demo .tender-add-form-col .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+  #tenders-demo .tender-add-form-col textarea.input { width:100%; min-height: 120px; resize: vertical; }
+  #tenders-demo .input-unit-wide { width: 260px; }
 
   @media (max-width: 880px){
     #tenders-demo .tender-dropdown { position: static; width: 100%; box-shadow: none; margin-top: 10px; }
