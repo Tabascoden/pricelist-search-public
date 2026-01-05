@@ -484,6 +484,19 @@
     });
   }
 
+  async function addTenderItemsBulkFromText(text, defaultUnit) {
+    const pid = state.project?.id;
+    if (!pid) return;
+    return apiJson(`/api/tenders/${pid}/items/bulk`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        text,
+        default_unit: defaultUnit || null,
+      }),
+    });
+  }
+
   async function clearFromCart(itemId) {
     const pid = state.project?.id;
     if (!pid) return;
@@ -544,10 +557,11 @@
   function renderList() {
     const listBox = $("#tenders-view-list");
     const projectBox = $("#tenders-view-project");
-    listBox.classList.remove("hidden");
-    projectBox.classList.add("hidden");
+    listBox?.classList.remove("hidden");
+    projectBox?.classList.add("hidden");
 
     const tb = $("#tenders-list-body");
+    if (!tb) return;
     tb.innerHTML = (state.projects || []).map(p => {
       const title = p.title || `Тендер #${p.id}`;
       const count = Number.isFinite(Number(p.items_count)) ? Number(p.items_count) : 0;
@@ -612,6 +626,7 @@
 
   function renderSelectedSuppliersChipline() {
     const box = $("#tenders-selected-suppliers");
+    if (!box) return;
     const ids = state.selectedSupplierIds || [];
     if (!ids.length) {
       box.innerHTML = `<div class="tender-legend-title">Поставщики</div><div class="tender-hint">Не выбраны. Нажми «Выбрать поставщиков».</div>`;
@@ -624,15 +639,21 @@
   function renderProject() {
     const listBox = $("#tenders-view-list");
     const projectBox = $("#tenders-view-project");
-    listBox.classList.add("hidden");
-    projectBox.classList.remove("hidden");
+    listBox?.classList.add("hidden");
+    projectBox?.classList.remove("hidden");
 
     const p = state.project;
     if (!p) return;
 
-    $("#tenders-project-title").textContent = `Тендер #${p.id}: ${p.title || ""}`.trim();
-    $("#tenders-project-meta").textContent =
-      `Позиций: ${(p.items || []).length} • Минимальный score для показа: ${MIN_SCORE}`;
+    const titleEl = $("#tenders-project-title");
+    const metaEl = $("#tenders-project-meta");
+    if (titleEl) {
+      titleEl.textContent = `Тендер #${p.id}: ${p.title || ""}`.trim();
+    }
+    if (metaEl) {
+      metaEl.textContent =
+        `Позиций: ${(p.items || []).length} • Минимальный score для показа: ${MIN_SCORE}`;
+    }
 
     renderSelectedSuppliersChipline();
     renderProjectTable();
@@ -643,6 +664,7 @@
 
   function renderProjectTable() {
     const tbl = $("#tenders-project-table");
+    if (!tbl) return;
     const items = state.project?.items || [];
     const supplierIds = (state.selectedSupplierIds || []).map(Number).filter(Number.isFinite);
 
@@ -1021,6 +1043,7 @@
 
   function renderCartTotals(cart) {
     const totalsBox = $("#tenders-totals");
+    if (!totalsBox) return;
     const bySup = new Map();
     for (const r of cart) {
       const sid = Number(r.supplier_id);
@@ -1113,6 +1136,7 @@
       if (!pid) return;
       const nameInput = $("#tenders-add-name");
       const qtyInput = $("#tenders-add-qty");
+      const unitInput = $("#tenders-add-unit");
       const name = (nameInput?.value || "").trim();
       if (!name) {
         alert("Введите номенклатуру.");
@@ -1126,15 +1150,61 @@
         return;
       }
       try {
-        await addTenderItem({
+        const payload = {
           name_input: name,
           qty: qtyVal,
-        });
+        };
+        const unitValue = (unitInput?.value || "").trim();
+        if (unitValue) {
+          payload.unit_input = unitValue;
+        }
+        await addTenderItem(payload);
         if (nameInput) nameInput.value = "";
         if (qtyInput) qtyInput.value = "";
+        if (unitInput) unitInput.value = "";
         await reloadProjectHard();
       } catch (e) {
         alert("Не удалось добавить позицию.");
+      }
+    });
+
+    const pasteForm = $("#tenders-paste-form");
+    pasteForm?.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const pid = state.project?.id;
+      if (!pid) return;
+      const textArea = $("#tenders-paste-text");
+      const unitSelect = $("#tenders-paste-unit");
+      const submitBtn = $("#tenders-paste-submit");
+      const text = (textArea?.value || "").trim();
+      if (!text) {
+        alert("Вставьте список позиций.");
+        return;
+      }
+      const defaultUnit = (unitSelect?.value || "").trim();
+      if (submitBtn) submitBtn.disabled = true;
+      try {
+        const j = await addTenderItemsBulkFromText(text, defaultUnit);
+        const inserted = Number(j?.inserted || 0);
+        const skipped = Number(j?.skipped || 0);
+        const errors = Array.isArray(j?.errors) ? j.errors : [];
+        const summary = `Добавлено: ${inserted} • проблемных строк: ${skipped}`;
+        if (typeof toast === "function") {
+          toast("Готово", summary);
+        } else {
+          const details = errors.slice(0, 8).map(err => {
+            const lineNo = err.line_no ?? "";
+            return `${lineNo}) ${err.line} — ${err.reason}`;
+          }).join("\n");
+          alert(details ? `${summary}\n\n${details}` : summary);
+        }
+        if (textArea) textArea.value = "";
+        await reloadProjectHard();
+      } catch (err) {
+        const msg = err?.payload?.error || err?.message || "Не удалось добавить позиции.";
+        alert(msg);
+      } finally {
+        if (submitBtn) submitBtn.disabled = false;
       }
     });
 
@@ -1198,7 +1268,9 @@
       const pid = state.project?.id;
       if (!pid) return;
 
-      const ids = $$("input[data-supplier-id]", $("#tenders-suppliers-list"))
+      const listRoot = $("#tenders-suppliers-list");
+      if (!listRoot) return;
+      const ids = $$("input[data-supplier-id]", listRoot)
         .filter(i => i.checked)
         .map(i => Number(i.getAttribute("data-supplier-id")))
         .filter(Number.isFinite);

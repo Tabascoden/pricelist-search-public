@@ -70,7 +70,34 @@
       <form class="tender-add-form" id="tenders-add-item-form">
         <input class="input" id="tenders-add-name" placeholder="Номенклатура" required />
         <input class="input input-qty" id="tenders-add-qty" type="number" min="0" step="0.001" placeholder="Количество" />
+        <select class="input input-unit" id="tenders-add-unit">
+          <option value="">Ед.</option>
+          <option value="кг">кг</option>
+          <option value="г">г</option>
+          <option value="л">л</option>
+          <option value="мл">мл</option>
+        </select>
         <button class="btn" type="submit">Добавить</button>
+      </form>
+    </div>
+
+    <div class="tender-add" style="margin-top:10px;">
+      <div class="tender-add-title">Добавить списком (копипаст из мессенджера)</div>
+      <form class="tender-add-form-col" id="tenders-paste-form">
+        <textarea class="input" id="tenders-paste-text" rows="7" placeholder="Каждая строка — одна позиция"></textarea>
+        <div class="row tender-add-actions">
+          <select class="input input-unit" id="tenders-paste-unit">
+            <option value="">Ед. по умолчанию</option>
+            <option value="кг">кг</option>
+            <option value="г">г</option>
+            <option value="л">л</option>
+            <option value="мл">мл</option>
+          </select>
+          <button class="btn" type="submit" id="tenders-paste-submit">Добавить списком</button>
+        </div>
+        <div class="tender-hint">
+          Каждая строка — позиция. Поддержка: "Название 10 кг", "Название - 10 кг", "Название↹10↹кг", нумерация "1) ...".
+        </div>
       </form>
     </div>
 
@@ -211,6 +238,11 @@
   #tenders-demo .tender-add-title { font-weight: 700; margin-bottom: 8px; }
   #tenders-demo .tender-add-form { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
   #tenders-demo .input-qty { width: 70px; }
+  #tenders-demo .input-unit { width: 90px; }
+  #tenders-demo .tender-add-form-col { display:flex; flex-direction: column; gap: 8px; }
+  #tenders-demo .tender-add-form-col .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  #tenders-demo .tender-add-form-col textarea { width:100%; min-height: 140px; resize: vertical; }
+  #tenders-demo .tender-add-actions { justify-content: flex-end; }
 
   @media (max-width: 880px){
     #tenders-demo .tender-form { width: 100%; justify-content:flex-end; }
