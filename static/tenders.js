@@ -302,7 +302,7 @@
 
     const item = state.project?.items?.find(x => Number(x.id) === Number(itemId));
     $("#tenders-match-title").textContent = `${getSupplierName(supplierId)} — подбор`;
-    $("#tenders-match-sub").textContent = item ? `Нужно: ${item.name_input} (кол-во: ${item.qty ?? "—"} ${item.unit_input ?? ""})` : "";
+    $("#tenders-match-sub").textContent = item ? `Нужно: ${item.name_input} (кол-во: ${item.qty ?? "—"})` : "";
     const searchInput = $("#tenders-match-search");
     if (searchInput) {
       searchInput.value = "";
@@ -364,6 +364,7 @@
         return `
           <tr>
             <td>${esc(m.name_raw || "")}</td>
+            <td>${esc(m.unit || "—")}</td>
             <td>${esc(fmtMoney(supplierPrice))}</td>
             <td>${esc(fmtMoney(m.price_per_unit ?? m.price))}</td>
             <td>
@@ -374,7 +375,7 @@
         `;
       }).join("");
 
-    body.innerHTML = rows || `<tr><td colspan="4" class="tender-hint">Ничего не найдено.</td></tr>`;
+    body.innerHTML = rows || `<tr><td colspan="5" class="tender-hint">Ничего не найдено.</td></tr>`;
 
     // bind picks
     $$("button[data-pick]", body).forEach(btn => {
@@ -640,7 +641,6 @@
           <th class="sticky-col-1" style="width:70px;">№</th>
           <th class="sticky-col-2" style="min-width:130px;">Номенклатура</th>
           <th style="width:70px;">Кол-во</th>
-          <th style="width:90px;">Ед.</th>
           ${supplierIds.map(id => `<th class="supplierTh">${esc(getSupplierName(id))}</th>`).join("")}
         </tr>
       </thead>
@@ -737,6 +737,7 @@
             <div class="supMeta">
               <div class="supPrice">${esc(fmtMoney(supplierPrice))}</div>
               <div class="supScore">цена/ед: ${esc(fmtMoney(m.price_per_unit ?? m.price))}</div>
+              <div class="supScore">ед.: ${esc(m.unit || "—")}</div>
             </div>
             ${bestNote ? `<div class="supScore">выгодно: ${esc(bestNote)}</div>` : ""}
             <div class="iconRow">
@@ -765,7 +766,6 @@
               value="${esc(qtyValue)}"
             />
           </td>
-          <td>${esc(it.unit_input || "")}</td>
           ${rowCells}
         </tr>
       `;
@@ -870,7 +870,7 @@
         row_no: it.row_no,
         name_input: it.name_input,
         qty: it.qty,
-        unit_input: it.unit_input,
+        unit: offer.unit,
         supplier_id: offer.supplier_id,
         supplier_name: offer.supplier_name,
         supplier_item_id: offer.supplier_item_id,
@@ -922,7 +922,7 @@
               <td>${esc(r.row_no ?? "")}</td>
               <td><b>${esc(r.name_input || "")}</b></td>
               <td>${esc(fmtNum(r.qty, 3))}</td>
-              <td>${esc(r.unit_input || "")}</td>
+              <td>${esc(r.unit || "")}</td>
               <td>${esc(r.supplier_name || ("#" + r.supplier_id))}</td>
               <td>${esc(r.name_raw || "")}</td>
               <td>
@@ -1071,7 +1071,6 @@
       if (!pid) return;
       const nameInput = $("#tenders-add-name");
       const qtyInput = $("#tenders-add-qty");
-      const unitInput = $("#tenders-add-unit");
       const name = (nameInput?.value || "").trim();
       if (!name) {
         alert("Введите номенклатуру.");
@@ -1084,16 +1083,13 @@
         alert("Введите корректное количество.");
         return;
       }
-      const unitVal = (unitInput?.value || "").trim();
       try {
         await addTenderItem({
           name_input: name,
           qty: qtyVal,
-          unit_input: unitVal || null,
         });
         if (nameInput) nameInput.value = "";
         if (qtyInput) qtyInput.value = "";
-        if (unitInput) unitInput.value = "";
         await reloadProjectHard();
       } catch (e) {
         alert("Не удалось добавить позицию.");
