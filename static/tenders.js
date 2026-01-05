@@ -156,6 +156,16 @@
     return { effectivePrice: null, usesPpu: false };
   }
 
+  function getPriceUnitLabel(match) {
+    if (!match) return "";
+    const baseUnit = String(match.base_unit || "").trim();
+    const unit = String(match.unit || "").trim();
+    if (match.price_per_unit != null) {
+      return baseUnit || unit;
+    }
+    return unit || baseUnit;
+  }
+
   function getSupplierName(supplierId) {
     const s = state.suppliers.find(x => Number(x.id) === Number(supplierId));
     return s ? (s.name || `Поставщик #${supplierId}`) : `Поставщик #${supplierId}`;
@@ -355,6 +365,7 @@
     const rows = (state.matchModal.rows || [])
       .map(m => {
         const supplierPrice = m.price;
+        const priceUnitLabel = getPriceUnitLabel(m) || "ед.";
         const starActive = item?.star_supplier_item_id != null
           && Number(item.star_supplier_item_id) === Number(m.supplier_item_id);
         const starClass = starActive ? "btn star-picked" : "btn";
@@ -366,7 +377,7 @@
             <td>${esc(m.name_raw || "")}</td>
             <td>${esc(m.unit || "—")}</td>
             <td>${esc(fmtMoney(supplierPrice))}</td>
-            <td>${esc(fmtMoney(m.price_per_unit ?? m.price))}</td>
+            <td>${esc(fmtMoney(m.price_per_unit ?? m.price))} / ${esc(priceUnitLabel)}</td>
             <td>
               <button class="btn primary" data-pick="1" data-supplier-item-id="${esc(m.supplier_item_id)}">Выбрать</button>
               <button class="${starClass}" title="${esc(starTitle)}" data-star="1" data-supplier-item-id="${esc(m.supplier_item_id)}">★</button>
@@ -715,8 +726,11 @@
         }
 
         const supplierPrice = m.price;
+        const priceUnitLabel = getPriceUnitLabel(m);
         const bestNote = (!picked && bestSid === sid)
-          ? (bestUsesPpu ? "по цене/ед" : "по цене (цена/ед не указана)")
+          ? (priceUnitLabel
+              ? `по цене/${priceUnitLabel}`
+              : (bestUsesPpu ? "по цене/ед" : "по цене"))
           : "";
         const cls = [
           "supplierCell",
@@ -736,7 +750,7 @@
             <div class="supName">${esc(m.name_raw || "")}</div>
             <div class="supMeta">
               <div class="supPrice">${esc(fmtMoney(supplierPrice))}</div>
-              <div class="supScore">цена/ед: ${esc(fmtMoney(m.price_per_unit ?? m.price))}</div>
+              <div class="supScore">цена/${esc(priceUnitLabel || "ед.")}: ${esc(fmtMoney(m.price_per_unit ?? m.price))}</div>
               <div class="supScore">ед.: ${esc(m.unit || "—")}</div>
             </div>
             ${bestNote ? `<div class="supScore">выгодно: ${esc(bestNote)}</div>` : ""}
