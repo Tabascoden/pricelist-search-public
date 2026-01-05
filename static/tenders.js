@@ -21,6 +21,7 @@
     error: null,
   };
   let matchSearchTimer = null;
+  let oneSupplierTimer = null;
 
   // ---------- utils ----------
   const $ = (sel, root = document) => root.querySelector(sel);
@@ -169,6 +170,16 @@
 
   function isBlocked(itemId, supplierId) {
     return !!state.blocked?.[`${itemId}:${supplierId}`];
+  }
+
+  function scheduleRenderOneSupplierBlock() {
+    if (oneSupplierTimer) {
+      clearTimeout(oneSupplierTimer);
+    }
+    oneSupplierTimer = setTimeout(() => {
+      oneSupplierTimer = null;
+      renderOneSupplierBlock();
+    }, 200);
   }
 
   let tenderGridListenersBound = false;
@@ -437,6 +448,7 @@
     if (updated) {
       renderProjectTable();
       renderCart();
+      renderOneSupplierBlock();
     } else {
       await reloadProjectHard();
     }
@@ -624,6 +636,7 @@
 
     renderSelectedSuppliersChipline();
     renderProjectTable();
+    renderOneSupplierBlock();
     renderCart();
     ensureTenderGridMaxHeight();
     bindTenderGridMaxHeight();
@@ -780,6 +793,7 @@
         state.blocked[key] = true;
         saveBlockedLS(state.project.id, state.blocked);
         renderProjectTable();
+        scheduleRenderOneSupplierBlock();
       };
     });
 
@@ -789,6 +803,7 @@
         delete state.blocked[key];
         saveBlockedLS(state.project.id, state.blocked);
         renderProjectTable();
+        scheduleRenderOneSupplierBlock();
       };
     });
 
@@ -846,6 +861,123 @@
         }
       });
     });
+  }
+
+  function renderOneSupplierBlock() {
+    const box = $("#tenders-one-supplier");
+    if (!box) return;
+
+    const items = state.project?.items || [];
+    const supplierIds = (state.selectedSupplierIds || []).map(Number).filter(Number.isFinite);
+
+    if (!items.length) {
+      box.innerHTML = `<div class="tender-hint" style="margin-top:10px;">Нет позиций в тендере.</div>`;
+      return;
+    }
+
+    if (!supplierIds.length) {
+      box.innerHTML = `<div class="tender-hint" style="margin-top:10px;">Выберите поставщиков для сравнения.</div>`;
+      return;
+    }
+
+    const relevantItems = items.map(it => {
+      const overrideNum = Number(state.orderQtyOverrides?.[String(it.id)]);
+      const qty = Number.isFinite(overrideNum) ? overrideNum : Number(it.qty);
+      if (!Number.isFinite(qty) || qty <= 0) return null;
+      return { item: it, qty };
+    }).filter(Boolean);
+
+    const relevantTotal = relevantItems.length;
+    if (!relevantTotal) {
+      box.innerHTML = `<div class="tender-hint" style="margin-top:10px;">Нет позиций с количеством.</div>`;
+      return;
+    }
+
+    const rows = supplierIds.map(sid => {
+      let found = 0;
+      let sum = 0;
+      for (const entry of relevantItems) {
+        const it = entry.item;
+        if (isBlocked(it.id, sid)) {
+          continue;
+        }
+
+        const selectedOffer = (it.offers || []).find(
+          o => Number(o.supplier_id) === Number(sid) && ["selected", "final"].includes(o.offer_type)
+        );
+        const match = selectedOffer || getMatch(it.id, sid);
+        if (!match) {
+          continue;
+        }
+
+        if (!selectedOffer) {
+          const score = Number(match.score);
+          if (!Number.isFinite(score) || score < MIN_SCORE) {
+            continue;
+          }
+        }
+
+        const { effectivePrice } = getEffectivePrice(match);
+        if (!Number.isFinite(effectivePrice)) {
+          continue;
+        }
+
+        const { totalPrice } = calcTotals(match, entry.qty);
+        if (!Number.isFinite(totalPrice)) {
+          continue;
+        }
+
+        found += 1;
+        sum += totalPrice;
+      }
+
+      const missing = relevantTotal - found;
+      const coveragePct = relevantTotal > 0 ? (found / relevantTotal) * 100 : 0;
+      return {
+        supplier_id: sid,
+        supplier_name: getSupplierName(sid),
+        found,
+        missing,
+        coveragePct,
+        sum,
+      };
+    });
+
+    rows.sort((a, b) => (a.missing - b.missing) || (a.sum - b.sum));
+
+    let bestRow = null;
+    const fullCoverage = rows.filter(r => r.missing === 0);
+    const bestCandidates = fullCoverage.length ? fullCoverage : rows;
+    for (const row of bestCandidates) {
+      if (!bestRow || row.sum < bestRow.sum) {
+        bestRow = row;
+      }
+    }
+
+    box.innerHTML = `
+      <table class="cartTable oneSupplierTable">
+        <thead>
+          <tr>
+            <th>Поставщик</th>
+            <th style="width:140px;">Найдено позиций</th>
+            <th style="width:140px;">Не найдено</th>
+            <th style="width:120px;">Покрытие %</th>
+            <th style="width:160px;">Сумма</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows.map(r => `
+            <tr class="${bestRow && r.supplier_id === bestRow.supplier_id ? "oneSupplierBest" : ""}">
+              <td><b>${esc(r.supplier_name)}</b></td>
+              <td>${esc(r.found)}</td>
+              <td>${esc(r.missing)}</td>
+              <td>${esc(fmtNum(r.coveragePct, 1))}%</td>
+              <td><b>${esc(fmtMoney(r.sum))}</b></td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    `;
   }
 
   function renderCart() {
@@ -970,6 +1102,7 @@
         const sumCell = box.querySelector(`[data-order-sum="${CSS.escape(String(itemId))}"]`);
         if (sumCell) sumCell.textContent = fmtMoney(total);
         renderCartTotals(cart);
+        scheduleRenderOneSupplierBlock();
       });
     });
 
@@ -983,8 +1116,8 @@
     for (const r of cart) {
       const sid = Number(r.supplier_id);
       const sname = r.supplier_name || getSupplierName(sid);
-      const override = state.orderQtyOverrides?.[String(r.item_id)];
-      const orderQty = Number.isFinite(override) ? override : Number(r.qty);
+      const overrideNum = Number(state.orderQtyOverrides?.[String(r.item_id)]);
+      const orderQty = Number.isFinite(overrideNum) ? overrideNum : Number(r.qty);
       const supplierPrice = Number(r.supplier_price);
       const rowTotal = Number.isFinite(orderQty) && Number.isFinite(supplierPrice)
         ? orderQty * supplierPrice
