@@ -100,6 +100,11 @@ def create_app() -> Flask:
             return as_float if math.isfinite(as_float) else None
         if isinstance(v, float):
             return v if math.isfinite(v) else None
+        if isinstance(v, str):
+            text = v.strip()
+            if text.lower() == "nan":
+                return None
+            return v
         if isinstance(v, dict):
             return {k: _json_safe(val) for k, val in v.items()}
         if isinstance(v, (list, tuple, set)):
